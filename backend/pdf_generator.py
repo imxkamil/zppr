@@ -271,11 +271,13 @@ def render_calculator_pdf(payload: Dict[str, Any], plan: Dict[str, Any]) -> Tupl
     story.append(Spacer(1, 8))
     facts = [
         ["Wariant wypłaty", variant_label(variant, (plan.get("legislation") or {}))],
-        ["Podstawa wymiaru brutto", _money(payload.get("base_salary_gross"))],
+        ["Wynagrodzenie brutto przed 13,71%", _money(payload.get("base_salary_gross"))],
+        ["Podstawa zasiłku po 13,71%", _money(plan.get("benefit_base"))],
         ["Liczba dzieci", str(children)],
-        ["Łączenie z pracą", f"{work}% etatu (obniża tylko zasiłek rodzicielski)"],
+        ["Łączenie z pracą", f"{payload.get('etat_pracy') if payload.get('etat_pracy') is not None else work} etatu przez {payload.get('tygodnie_laczenia') or 0} tyg."],
         ["Za życiem", "Tak — wydłużony urlop rodzicielski" if payload.get("za_zyciem") else "Nie"],
-        ["Uzupełniający urlop macierzyński", f"+{payload.get('premature_extra_weeks') or 0} tyg."],
+        ["Uzupełniający urlop macierzyński", f"{(plan.get('breakdown') or {}).get('premature_weeks', 0)} tyg. · 100%"],
+        ["Płatnik", str((plan.get("payer") or {}).get("title") or "")],
         ["Wniosek o wariant stały do", _long_date(str(plan.get("deadline_21_days") or ""))],
     ]
     story.append(Paragraph("Parametry wyliczenia", styles["h2"]))

@@ -23,7 +23,7 @@ Wyniki mają charakter informacyjny i nie są decyzją ZUS.
 - **Backend:** Python + FastAPI (`backend/main.py`), uruchamiany przez uvicorn na porcie 8000.
 - **Silnik świadczeń:** `backend/engine.py` — stawki 2026, wariant 81,5% albo 100% + 70%, zaliczka PIT 12%, harmonogram 12 miesięcy, trzy scenariusze testowe.
 - **Baza:** SQLite (`backend/ezus_rodzic.db`) — organizacje Strefy Wsparcia oraz edytowalne parametry ustawowe (`backend/database.py`). Silnik zasiłków czyta stawki i wymiary z tej tabeli.
-- **PDF przychodzące:** PyMuPDF wyciąga tekst, a przy ustawionym `GEMINI_API_KEY` analizę robi Gemini. Bez klucza działa parser lokalny (`backend/pdf_verifier.py`).
+- **PDF przychodzące:** PyMuPDF wyciąga tekst, lokalny parser czyta pola wniosku, a przy ustawionym `GEMINI_API_KEY` Gemini uzupełnia tylko braki albo robi OCR skanu. Bez klucza skan nie dostaje sztucznych kwot (`backend/pdf_verifier.py`).
 - **PDF wychodzące:** ReportLab z czcionką Arial (polskie znaki) albo bezpieczną transliteracją, gdy czcionki systemowej nie ma (`backend/pdf_generator.py`).
 
 ## Uruchomienie
@@ -89,7 +89,7 @@ Każde wywołanie API w przeglądarce ma limit czasu. Gdy `localhost:8000` nie o
 
 1. Otwórz frontend i wybierz **Zaloguj do PUE/eZUS przez mObywatel**, potem **zasymuluj skan**. Można też wejść od razu w podgląd scenariusza.
 2. Na pasku **Scenariusz testowy** przełącz UoP, JDG i umowę zlecenie. Status oraz zakładka dokumentów zmieniają płatnika: pracodawca przy UoP powyżej 20 osób, ZUS przy JDG i zleceniu.
-3. W kalkulatorze porównaj 81,5% z 100% + 70%, suwak etatu (0–50%) i liczbę dzieci. **Pobierz PDF** zapisuje `plan-swiadczen.pdf`.
+3. W kalkulatorze porównaj 81,5% z 100% + 70%, wybierz zdarzenie (poród, ciąża z rehabilitacją, adopcja, piecza), urlop przed porodem, hospitalizację i łączenie z pracą do połowy etatu. Kwota wejściowa to brutto przed odliczeniem 13,71%. **Pobierz PDF** zapisuje `plan-swiadczen.pdf`.
 4. W weryfikatorze kliknij jeden z czterech przypadków albo wgraj PDF. **Pobierz raport** zapisuje `raport-weryfikacji.pdf`.
 5. W dokumentach **Utwórz checklistę PDF** zapisuje checklistę dopasowaną do bieżącego scenariusza.
 6. W Strefie Wsparcia wyszukaj organizację. W panelu administracyjnym, na zakładce **Parametry ustawowe i stawki ZUS**, zmień stawkę wariantu stałego i sprawdź przeliczenie w kalkulatorze.
@@ -106,7 +106,7 @@ Interfejs, silnik wyliczeń, integracja API i konteneryzacja powstały przy wspa
 
 W samej aplikacji model jest opcjonalny i ograniczony do dwóch miejsc, opisanych też w modalach **Jak działa AI w tym module?**:
 
-- **Weryfikator PDF.** PyMuPDF wyciąga tekst z pliku. Jeśli ustawiono `GEMINI_API_KEY`, model Gemini 2.5 Flash zwraca JSON z polami wniosku i oceną kompletności. Bez klucza działa deterministyczny parser regułowy (tytuł ubezpieczenia, obecność Z-3/Z-3a, JDG).
+- **Weryfikator PDF, odczyt hybrydowy.** PyMuPDF wyciąga warstwę tekstową. Lokalny parser czyta z niej imię i rolę (matka, ojciec, opiekun), datę porodu, przewidywanego porodu albo przyjęcia na wychowanie, podstawę składek lub wynagrodzenie, tytuł ubezpieczenia (UoP, JDG, zlecenie) oraz liczbę ubezpieczonych. Brakujące pole zostaje puste. Jeśli ustawiono `GEMINI_API_KEY`, Gemini 2.5 Flash uzupełnia tylko puste pola, a przy skanie bez tekstu może zrobić OCR. Bez klucza skan zwraca komunikat o braku warstwy tekstowej i nie podstawia kwoty ani daty.
 - **Radar ryzyk.** Karty nie są swobodną odpowiedzią czatu. Dla scenariusza dokładane są reguły: ciągłość ubezpieczenia do porodu, nagłe podwyższenie podstawy składek oraz zadłużenie JDG powyżej 1% minimalnego wynagrodzenia.
 
-Kalkulator zasiłków, checklisty, parametry ustawowe i organizacje pomocowe liczą się wzorami oraz danymi z SQLite. Nie wywołują modelu.
+Kalkulator nie wywołuje modelu. Liczy stan prawny na 2026 rok: Kodeks pracy (Dz.U. 2026 poz. 1245) oraz ustawa zasiłkowa (Dz.U. 2026 poz. 854), z uwzględnieniem rozporządzeń MRPiPS z 11.03.2025 i 27.09.2026. Obejmuje poród, ciążę z okresem 270 dni i świadczeniem rehabilitacyjnym, adopcję do 14. roku życia, pieczę zastępczą do 7. albo 10. roku, urlop przed porodem, uzupełniający urlop macierzyński, łączenie rodzicielskiego z pracą do połowy etatu oraz podział między rodziców. Stawki bazowe i wymiary urlopu przy jednym dziecku są w SQLite i da się je zmienić w panelu parametrów. Odliczenie 13,71%, podłoga i sufit podstawy oraz próg 20 ubezpieczonych są w silniku.

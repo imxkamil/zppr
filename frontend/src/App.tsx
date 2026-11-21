@@ -9,6 +9,8 @@ import {
   SIMULATION_AS_OF,
   addDaysIso,
   calculateLocally,
+  parsePlnAmount,
+  supplementaryWeeks,
   confirmMobywatel,
   createOrganization,
   daysBetween,
@@ -133,6 +135,24 @@ function employmentFor(scenario: Scenario) {
   return "uop";
 }
 
+function insuredFor(employment: string) {
+  if (employment === "jdg") return 1;
+  if (employment === "zlecenie") return 12;
+  if (employment === "ustanie") return 8;
+  return 25;
+}
+
+function toIsoDate(value: string | null | undefined) {
+  if (!value) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const match = value.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : "";
+}
+
+function blankNumber(value: string) {
+  return value.trim() === "" ? null : Number(value);
+}
+
 function pagesLabel(count: number) {
   if (count === 1) return "1 strona";
   const mod10 = count % 10;
@@ -201,8 +221,8 @@ function AiExplainer({ focus, onClose }: { focus: "risks" | "pdf"; onClose: () =
         <div className="ai-explainer">
           <article>
             <h3>Ekstrakcja pól z PDF</h3>
-            <p>PyMuPDF wyciąga tekst z wniosku. Gdy ustawiony jest klucz <strong>GEMINI_API_KEY</strong>, model <strong>Gemini 2.5 Flash</strong> zwraca JSON: tytuł ubezpieczenia, okres, podstawę, datę porodu, wariant i ocenę kompletności.</p>
-            <p>Bez klucza działa deterministyczny fallback regułowy: szuka w tekście słów „JDG”, „zlecenie” i „Z-3a” i na tej podstawie oznacza kompletność. Ten sam wynik da się powtórzyć bez modelu.</p>
+            <p>Najpierw PyMuPDF wyciąga tekst, a lokalny parser czyta z niego imię i rolę, datę porodu albo przyjęcia, podstawę, tytuł ubezpieczenia i liczbę ubezpieczonych. Ten odczyt jest powtarzalny i nie podstawia kwot, gdy pola nie ma w pliku.</p>
+            <p>Gdy ustawiony jest klucz <strong>GEMINI_API_KEY</strong>, model <strong>Gemini 2.5 Flash</strong> uzupełnia tylko puste pola, a przy skanie bez warstwy tekstowej może zrobić OCR. Bez klucza skan kończy się komunikatem o braku OCR. Kalkulator liczy już odczytaną podstawę po odjęciu 13,71%.</p>
           </article>
           <article>
             <h3>Radar ryzyk prawnych</h3>
@@ -213,7 +233,7 @@ function AiExplainer({ focus, onClose }: { focus: "risks" | "pdf"; onClose: () =
               <li>zadłużenie JDG powyżej 1% minimalnego wynagrodzenia, które wstrzymuje wypłatę.</li>
             </ul>
           </article>
-          <p className="muted">Kalkulator, checklista i parametry ustawowe liczą się wzorami z bazy SQLite, bez wywołania modelu.</p>
+          <p className="muted">Kalkulator obejmuje stan prawny 2026: Kodeks pracy (Dz.U. 2026 poz. 1245) i ustawę zasiłkową (Dz.U. 2026 poz. 854), w tym urlop przed porodem, uzupełniający urlop macierzyński, adopcję, pieczę, łączenie z pracą i świadczenie rehabilitacyjne. Wymiary i stawki bazowe biorą się z SQLite, a sam wzór nie wywołuje modelu.</p>
         </div>
         <div className="modal-actions"><Button variant="secondary" onClick={onClose}>Zamknij</Button></div>
       </div>
@@ -300,17 +320,37 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
   return <label className="toggle-row"><span><strong>{label}</strong>{hint && <small>{hint}</small>}</span><button type="button" role="switch" aria-checked={checked} className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span /></button></label>;
 }
 
-function CalculatorView({ scenario, legislation }: { scenario: Scenario; legislation: LegislationParams }) {
+function CalculatorView({ scenario, legislation, pdfCase }: { scenario: Scenario; legislation: LegislationParams; pdfCase: PdfCase | null }) {
   const [benefitKind, setBenefitKind] = useState("birth");
   const [children, setChildren] = useState("1");
   const [base, setBase] = useState(scenario.base_salary_gross);
   const [option, setOption] = useState("81.5");
   const [life, setLife] = useState(false);
-  const [supplement, setSupplement] = useState(false);
-  const [work, setWork] = useState(0);
+  const [etat, setEtat] = useState(0);
+  const [combineWeeks, setCombineWeeks] = useState("0");
   const [employment, setEmployment] = useState(employmentFor(scenario));
   const [due, setDue] = useState(scenario.due_date);
-  const [early, setEarly] = useState("Nie");
+  const [preWeeks, setPreWeeks] = useState(0);
+  const [gestation, setGestation] = useState("");
+  const [grams, setGrams] = useState("");
+  const [hospitalDays, setHospitalDays] = useState("");
+  const [stayFrom, setStayFrom] = useState("");
+  const [stayTo, setStayTo] = useState("");
+  const [contractFte, setContractFte] = useState("1");
+  const [childAge, setChildAge] = useState("");
+  const [schoolDeferral, setSchoolDeferral] = useState(false);
+  const [parentName, setParentName] = useState(scenario.first_name);
+  const [secondParent, setSecondParent] = useState("");
+  const [role, setRole] = useState("matka");
+  const [insured, setInsured] = useState(insuredFor(employmentFor(scenario)));
+  const [insuredAge, setInsuredAge] = useState("");
+  const [sickDays, setSickDays] = useState("100");
+  const [rehabMonths, setRehabMonths] = useState("0");
+  const [rehabPregnant, setRehabPregnant] = useState(true);
+  const [waitingDays, setWaitingDays] = useState("");
+  const [debt, setDebt] = useState("0");
+  const [motherUnavailable, setMotherUnavailable] = useState(false);
+  const [paternity, setPaternity] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [imported, setImported] = useState("");
   const [remotePlan, setRemotePlan] = useState<BenefitPlan | null>(null);
@@ -318,24 +358,48 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
   const [exportNote, setExportNote] = useState("");
 
   useEffect(() => {
+    const nextEmployment = employmentFor(scenario);
     setBase(scenario.base_salary_gross);
-    setEmployment(employmentFor(scenario));
+    setEmployment(nextEmployment);
+    setInsured(insuredFor(nextEmployment));
     setDue(scenario.due_date);
+    setParentName(scenario.first_name);
+    setSecondParent("");
     setImported("");
-  }, [scenario.id, scenario.base_salary_gross, scenario.due_date, scenario.user_name]);
+  }, [scenario.id, scenario.base_salary_gross, scenario.due_date, scenario.user_name, scenario.first_name]);
 
   const payload = useMemo<CalculatorInput>(() => ({
-    benefit_type: benefitKind === "pregnancy" ? "ciaza" : benefitKind === "adoption" ? "adopcja" : "porod",
+    benefit_type: benefitKind === "pregnancy" ? "ciaza_l4" : benefitKind === "adoption" ? "adopcja" : benefitKind === "foster" ? "piecza" : "porod",
     employment_type: employment,
     children_count: Number(children) || 1,
-    due_date: /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : "2026-09-18",
-    start_before_birth: early !== "Nie",
+    due_date: /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : "",
     za_zyciem: life,
-    premature_extra_weeks: supplement ? 8 : 0,
     variant: option === "81.5" ? "81.5" : "100_70",
-    work_share: work,
     base_salary_gross: Number.isFinite(base) ? base : 0,
-  }), [benefitKind, employment, children, due, early, life, supplement, option, work, base]);
+    parent_name: parentName,
+    second_parent_name: secondParent,
+    parent_role: role,
+    tygodnie_przed_porodem: preWeeks,
+    tydzien_ciazy_porodu: blankNumber(gestation),
+    masa_urodzeniowa_g: blankNumber(grams),
+    dni_w_szpitalu: blankNumber(hospitalDays),
+    hospitalizacja_od_dnia: blankNumber(stayFrom),
+    hospitalizacja_do_dnia: blankNumber(stayTo),
+    wymiar_etatu: blankNumber(contractFte) ?? 1,
+    etat_pracy: employment === "uop" ? etat : 0,
+    tygodnie_laczenia: blankNumber(combineWeeks),
+    wiek_dziecka_lata: blankNumber(childAge),
+    odroczenie_obowiazku_szkolnego: schoolDeferral,
+    liczba_ubezpieczonych: insured,
+    wiek_ubezpieczonego: blankNumber(insuredAge),
+    dni_niezdolnosci: Number(sickDays) || 0,
+    miesiace_rehabilitacji: Number(rehabMonths) || 0,
+    rehabilitacja_w_ciazy: rehabPregnant,
+    waiting_days: blankNumber(waitingDays),
+    debt_amount: Number(debt) || 0,
+    matka_nie_moze_opiekowac: motherUnavailable,
+    include_paternity: paternity,
+  }), [benefitKind, employment, children, due, life, option, base, parentName, secondParent, role, preWeeks, gestation, grams, hospitalDays, stayFrom, stayTo, contractFte, etat, combineWeeks, childAge, schoolDeferral, insured, insuredAge, sickDays, rehabMonths, rehabPregnant, waitingDays, debt, motherUnavailable, paternity]);
 
   const localPlan = useMemo(() => calculateLocally(payload, legislation), [payload, legislation]);
 
@@ -355,8 +419,12 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
 
   const plan = remotePlan ?? localPlan;
   const breakdown = plan.breakdown;
-  const maternitySpan = breakdown.maternity_weeks + breakdown.premature_weeks;
-  const span = Math.max(1, maternitySpan + breakdown.parental_weeks_mother + breakdown.parental_weeks_father_exclusive + breakdown.paternity_weeks);
+  const hospitalPreview = supplementaryWeeks(blankNumber(gestation), blankNumber(grams), blankNumber(hospitalDays), blankNumber(stayFrom), blankNumber(stayTo));
+  const extensionWeeks = breakdown.extension_weeks ?? 0;
+  const maternitySpan = (breakdown.pre_birth_weeks ?? 0) + breakdown.maternity_weeks + breakdown.premature_weeks;
+  const motherShare = breakdown.parental_weeks_mother + (role === "ojciec" ? 0 : extensionWeeks);
+  const fatherShare = breakdown.parental_weeks_father_exclusive + (role === "ojciec" ? extensionWeeks : 0);
+  const span = Math.max(1, maternitySpan + motherShare + fatherShare + breakdown.paternity_weeks);
   const pct = (weeks: number) => `${(weeks / span) * 100}%`;
   const maternityRate = option === "81.5" ? formatRate(legislation.rate_single_variant) : formatRate(legislation.rate_maternity);
   const singleLabel = formatRate(legislation.rate_single_variant);
@@ -370,7 +438,6 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
     const saved = await downloadPdf("/api/export/calculator-pdf", {
       ...payload,
       scenario_label: scenario.label,
-      parent_name: scenario.first_name,
     }, "plan-swiadczen.pdf");
     setExporting(false);
     if (!saved) {
@@ -379,17 +446,66 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
     }
   }
 
+  function importParsed() {
+    const extracted = pdfCase?.extracted;
+    if (!pdfCase || !extracted) {
+      setImported("Najpierw wgraj PDF albo wybierz sprawę w weryfikatorze. Formularz zostaje bez zmian i nie bierze kwoty ze scenariusza.");
+      return;
+    }
+    const amount = extracted.base_amount_value ?? parsePlnAmount(extracted.base_amount);
+    const iso = toIsoDate(extracted.due_or_birth_date);
+    if (pdfCase.error && amount == null && !iso && !extracted.applicant_name) {
+      setImported(pdfCase.error);
+      return;
+    }
+    if (amount == null && !iso && !extracted.applicant_name) {
+      setImported("W tym dokumencie nie ma kwoty, daty ani nazwiska. Nic nie zostało podstawione.");
+      return;
+    }
+    if (amount != null) setBase(amount);
+    if (iso) setDue(iso);
+    if (extracted.employment_type && ["uop", "jdg", "zlecenie", "ustanie"].includes(extracted.employment_type)) setEmployment(extracted.employment_type);
+    if (extracted.applicant_name) setParentName(extracted.applicant_name);
+    if (extracted.role === "matka" || extracted.role === "ojciec" || extracted.role === "opiekun") setRole(extracted.role);
+    if (typeof extracted.insured_count === "number") setInsured(extracted.insured_count);
+    if ((extracted.requested_variant || "").includes("100")) setOption("100_70");
+    else if ((extracted.requested_variant || "").includes("81")) setOption("81.5");
+    const missing = [amount == null ? "podstawy" : "", iso ? "" : "daty"].filter(Boolean).join(" i ");
+    setImported(missing ? `Wczytano ${pdfCase.filename}. Brak ${missing} w pliku — tych pól nie zmieniam.` : `Wczytano dane z ${pdfCase.filename}.`);
+  }
+
   function resetForm() {
+    const nextEmployment = employmentFor(scenario);
     setBenefitKind("birth");
     setChildren("1");
     setBase(scenario.base_salary_gross);
     setOption("81.5");
     setLife(false);
-    setSupplement(false);
-    setWork(0);
-    setEmployment(employmentFor(scenario));
+    setEtat(0);
+    setCombineWeeks("0");
+    setEmployment(nextEmployment);
+    setInsured(insuredFor(nextEmployment));
     setDue(scenario.due_date);
-    setEarly("Nie");
+    setPreWeeks(0);
+    setGestation("");
+    setGrams("");
+    setHospitalDays("");
+    setStayFrom("");
+    setStayTo("");
+    setContractFte("1");
+    setChildAge("");
+    setSchoolDeferral(false);
+    setParentName(scenario.first_name);
+    setSecondParent("");
+    setRole("matka");
+    setInsuredAge("");
+    setSickDays("100");
+    setRehabMonths("0");
+    setRehabPregnant(true);
+    setWaitingDays("");
+    setDebt("0");
+    setMotherUnavailable(false);
+    setPaternity(true);
     setImported("");
     setShowAll(false);
   }
@@ -405,14 +521,15 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
           <div className="field-group">
             <label>Rodzaj świadczenia</label>
             <div className="scenario-tabs">
-              <button type="button" className={benefitKind === "pregnancy" ? "active" : ""} onClick={() => setBenefitKind("pregnancy")}>Ciąża</button>
               <button type="button" className={benefitKind === "birth" ? "active" : ""} onClick={() => setBenefitKind("birth")}>Poród</button>
+              <button type="button" className={benefitKind === "pregnancy" ? "active" : ""} onClick={() => setBenefitKind("pregnancy")}>Ciąża L4 + rehabilitacyjne</button>
               <button type="button" className={benefitKind === "adoption" ? "active" : ""} onClick={() => setBenefitKind("adoption")}>Adopcja</button>
+              <button type="button" className={benefitKind === "foster" ? "active" : ""} onClick={() => setBenefitKind("foster")}>Piecza zastępcza</button>
             </div>
           </div>
           <div className="field-group">
             <label htmlFor="employment">Forma zatrudnienia</label>
-            <select id="employment" value={employment} onChange={(e) => setEmployment(e.target.value)}>
+            <select id="employment" value={employment} onChange={(e) => { setEmployment(e.target.value); setInsured(insuredFor(e.target.value)); }}>
               <option value="uop">Umowa o pracę</option>
               <option value="zlecenie">Umowa zlecenie</option>
               <option value="jdg">Działalność gospodarcza (JDG)</option>
@@ -426,59 +543,136 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
             </select>
           </div>
           <div className="two-fields">
-            <div className="field-group"><label htmlFor="birthdate">Data porodu</label><div className="input-icon"><Icon name="calendar" size={17} /><input id="birthdate" type="date" value={due} onChange={(e) => setDue(e.target.value)} /></div></div>
-            <div className="field-group"><label htmlFor="early">Start przed porodem</label><select id="early" value={early} onChange={(e) => setEarly(e.target.value)}><option>Nie</option><option>2 tygodnie</option><option>4 tygodnie</option><option>6 tygodni</option></select></div>
+            <div className="field-group"><label htmlFor="parent-name">Imię i nazwisko wnioskodawcy</label><input id="parent-name" value={parentName} onChange={(e) => setParentName(e.target.value)} /></div>
+            <div className="field-group"><label htmlFor="second-parent">Drugi rodzic</label><input id="second-parent" value={secondParent} placeholder="Ojciec" onChange={(e) => setSecondParent(e.target.value)} /></div>
           </div>
+          <div className="two-fields">
+            <div className="field-group"><label htmlFor="role">Rola wnioskodawcy</label><select id="role" value={role} onChange={(e) => setRole(e.target.value)}><option value="matka">Matka</option><option value="ojciec">Ojciec</option><option value="opiekun">Opiekun</option></select></div>
+            <div className="field-group"><label htmlFor="birthdate">{benefitKind === "pregnancy" ? "Początek zwolnienia" : benefitKind === "birth" ? "Data porodu" : "Data przyjęcia dziecka"}</label><div className="input-icon"><Icon name="calendar" size={17} /><input id="birthdate" type="date" value={due} onChange={(e) => setDue(e.target.value)} /></div></div>
+          </div>
+          {(benefitKind === "adoption" || benefitKind === "foster") && (
+            <div className="law-block">
+              <h3>{benefitKind === "adoption" ? "Wiek dziecka przy adopcji (limit 14 lat)" : "Wiek dziecka w pieczy (limit 7 lat, 10 przy odroczeniu)"}</h3>
+              <div className="two-fields">
+                <div className="field-group"><label htmlFor="child-age">Wiek dziecka w latach</label><input id="child-age" type="number" min="0" max="18" step="0.01" value={childAge} onChange={(e) => setChildAge(e.target.value)} /></div>
+                {benefitKind === "foster" && <Toggle checked={schoolDeferral} onChange={setSchoolDeferral} label="Odroczenie obowiązku szkolnego" hint="Podnosi limit wieku do 10 lat" />}
+              </div>
+            </div>
+          )}
+          {benefitKind === "birth" && (
+            <div className="law-block">
+              <h3>Urlop przed porodem (art. 180 § 2–3 KP)</h3>
+              <div className="label-line"><label htmlFor="pre-weeks">Tygodnie urlopu przed porodem (0–6)</label><strong>{preWeeks} tyg. · 100%</strong></div>
+              <input id="pre-weeks" type="range" min="0" max="6" step="1" value={preWeeks} onChange={(e) => setPreWeeks(Number(e.target.value))} />
+            </div>
+          )}
+          {benefitKind === "birth" && (
+            <div className="law-block">
+              <h3>Hospitalizacja noworodka / wcześniactwo</h3>
+              <div className="triple-fields">
+                <div className="field-group"><label htmlFor="gestation">Tydzień ciąży</label><input id="gestation" type="number" min="20" max="42" value={gestation} onChange={(e) => setGestation(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="grams">Masa (g)</label><input id="grams" type="number" min="0" value={grams} onChange={(e) => setGrams(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="hospital-days">Dni w szpitalu</label><input id="hospital-days" type="number" min="0" value={hospitalDays} onChange={(e) => setHospitalDays(e.target.value)} /></div>
+              </div>
+              <div className="two-fields">
+                <div className="field-group"><label htmlFor="stay-from">Pobyt od dnia życia</label><input id="stay-from" type="number" min="1" max="28" value={stayFrom} onChange={(e) => setStayFrom(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="stay-to">Pobyt do dnia życia</label><input id="stay-to" type="number" min="1" max="40" value={stayTo} onChange={(e) => setStayTo(e.target.value)} /></div>
+              </div>
+              <p className="import-note">Uzupełniający urlop: {hospitalPreview} tyg. · płatne 100% i poza uśrednieniem 81,5%. Od 37. tygodnia liczą się co najmniej 2 dni między 5. a 28. dniem życia.</p>
+            </div>
+          )}
+          {benefitKind === "pregnancy" && (
+            <div className="law-block">
+              <h3>Ciąża, e-ZLA kod B i świadczenie rehabilitacyjne</h3>
+              <div className="triple-fields">
+                <div className="field-group"><label htmlFor="insured-age">Wiek ubezpieczonej</label><input id="insured-age" type="number" min="15" max="80" value={insuredAge} onChange={(e) => setInsuredAge(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="sick-days">Dni niezdolności</label><input id="sick-days" type="number" min="0" max="400" value={sickDays} onChange={(e) => setSickDays(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="rehab-months">Miesiące rehabilitacji</label><input id="rehab-months" type="number" min="0" max="12" value={rehabMonths} onChange={(e) => setRehabMonths(e.target.value)} /></div>
+              </div>
+              <Toggle checked={rehabPregnant} onChange={setRehabPregnant} label="Rehabilitacja nadal w ciąży" hint="100% podstawy. Poza ciążą: 90% przez 90 dni, potem 75%." />
+              {(employment === "jdg" || employment === "zlecenie") && (
+                <div className="field-group"><label htmlFor="waiting">Dni podlegania dobrowolnemu ubezpieczeniu</label><input id="waiting" type="number" min="0" value={waitingDays} onChange={(e) => setWaitingDays(e.target.value)} /></div>
+              )}
+            </div>
+          )}
           <div className="toggle-box">
-            <Toggle checked={life} onChange={setLife} label="Zaświadczenie „Za życiem”" hint="Urlop rodzicielski do 65/67 tygodni" />
-            <Toggle checked={supplement} onChange={setSupplement} label="Uzupełniający urlop macierzyński" hint="W symulacji: +8 tygodni przy wcześniactwie" />
+            <Toggle checked={life} onChange={setLife} label="Zaświadczenie „Za życiem”" hint="Urlop rodzicielski 65/67 tygodni, a przy gwarancji minimalnej 62 tygodnie" />
+            <Toggle checked={paternity} onChange={setPaternity} label="Urlop ojcowski" hint="2 tygodnie, 100% podstawy, do 12. miesiąca życia albo 14. roku przy adopcji" />
+            <Toggle checked={motherUnavailable} onChange={setMotherUnavailable} label="Matka nie może sprawować opieki" hint="Wtedy pierwsze 14 tygodni może wykorzystać ojciec" />
           </div>
           <div className="field-group">
             <label>Wariant wypłaty</label>
             <label className={`radio-card ${option === "81.5" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "81.5"} onChange={() => setOption("81.5")} /><span><strong>{singleLabel} przez cały okres</strong><small>Wniosek do {legislation.deadline_days_81_5} dni po porodzie</small></span><Badge tone="success">STABILNY</Badge></label>
             <label className={`radio-card ${option === "100_70" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "100_70"} onChange={() => setOption("100_70")} /><span><strong>{splitLabel}</strong><small>Macierzyński {formatRate(legislation.rate_maternity)}, rodzicielski {formatRate(legislation.rate_parental)}</small></span></label>
           </div>
-          <div className="field-group slider-group">
-            <div className="label-line"><label htmlFor="work">Łączenie urlopu z pracą</label><strong>{work}% etatu</strong></div>
-            <input id="work" type="range" min="0" max="50" step="10" value={work} onChange={(e) => setWork(Number(e.target.value))} />
-            <div className="range-labels"><span>0%</span><span>25%</span><span>50%</span></div>
+          <div className="law-block">
+            <h3>Łączenie urlopu rodzicielskiego z pracą</h3>
+            <div className="label-line"><label htmlFor="work">Wymiar etatu (0–0,5)</label><strong>{etat.toLocaleString("pl-PL", { maximumFractionDigits: 1 })}</strong></div>
+            <input id="work" type="range" min="0" max="0.5" step="0.1" value={etat} disabled={employment !== "uop"} onChange={(e) => setEtat(Number(e.target.value))} />
+            <div className="field-group"><label htmlFor="combine-weeks">Tygodnie łączenia</label><input id="combine-weeks" type="number" min="0" max="134" step="1" value={combineWeeks} disabled={employment !== "uop" || etat === 0} onChange={(e) => setCombineWeeks(e.target.value)} /></div>
+            {employment !== "uop" && <p className="form-error">Łączenie z pracą jest dostępne tylko przy umowie o pracę.</p>}
+          </div>
+          <div className="two-fields">
+            <div className="field-group">
+              <label htmlFor="payer-size">Wielkość płatnika</label>
+              <select id="payer-size" value={insured > 20 ? "over" : "under"} onChange={(e) => setInsured(e.target.value === "over" ? 21 : 20)}>
+                <option value="under">Do 20 ubezpieczonych</option>
+                <option value="over">Powyżej 20 ubezpieczonych</option>
+              </select>
+            </div>
+            <div className="field-group"><label htmlFor="insured-count">Liczba ubezpieczonych</label><input id="insured-count" type="number" min="0" value={insured} onChange={(e) => setInsured(Number(e.target.value) || 0)} /></div>
+          </div>
+          {(employment === "jdg" || employment === "zlecenie") && (
+            <div className="field-group"><label htmlFor="debt">Zadłużenie wobec ZUS (zł)</label><input id="debt" type="number" min="0" step="0.01" value={debt} onChange={(e) => setDebt(e.target.value)} /></div>
+          )}
+          <div className="field-group">
+            <label htmlFor="contract-fte">Wymiar etatu w umowie</label>
+            <select id="contract-fte" value={contractFte} onChange={(e) => setContractFte(e.target.value)}>
+              <option value="1">Pełny etat</option>
+              <option value="0.75">3/4 etatu</option>
+              <option value="0.5">1/2 etatu</option>
+              <option value="0.25">1/4 etatu</option>
+            </select>
           </div>
           <div className="field-group">
-            <label htmlFor="base">Podstawa wymiaru zasiłku brutto</label>
+            <label htmlFor="base">Wynagrodzenie lub przychód brutto przed odliczeniem 13,71%</label>
             <div className="money-input"><input id="base" type="number" min="0" value={Number.isFinite(base) ? base : 0} onChange={(e) => setBase(e.target.value === "" ? 0 : Number(e.target.value))} /><span>PLN</span></div>
-            <button type="button" className="import-button" onClick={() => { setBase(scenario.base_salary_gross); setImported(`Zaimportowano ${pln(scenario.base_salary_gross)} ze scenariusza eZUS.`); }}><Icon name="download" size={15} /> Importuj z symulacji ZUS / PDF</button>
-            {imported && <p className="import-note">{imported}</p>}
+            <button type="button" className="import-button" onClick={importParsed}><Icon name="download" size={15} /> Importuj z symulacji ZUS / PDF</button>
+            {imported && <p className={imported.startsWith("Wczytano") ? "import-note" : "form-error"}>{imported}</p>}
           </div>
         </aside>
 
         <main className="results-panel">
-          <div className="result-heading"><div><span className="step-bubble">2</span><div><h2>Twój plan świadczeń</h2><p>Prognoza na podstawie wprowadzonych danych{option === "81.5" ? ` · wniosek ${singleLabel} do ${formatLongPl(plan.deadline_21_days)}` : ""}</p>{exportNote && <p className="export-note">{exportNote}</p>}</div></div><Button variant="secondary" icon="download" disabled={exporting} onClick={() => void downloadPlan()}>{exporting ? "Przygotowuję PDF…" : "Pobierz PDF"}</Button></div>
+          <div className="result-heading"><div><span className="step-bubble">2</span><div><h2>Twój plan świadczeń</h2><p>Prognoza na podstawie wprowadzonych danych{benefitKind !== "pregnancy" && option === "81.5" && plan.deadline_21_days ? ` · wniosek ${singleLabel} do ${formatLongPl(plan.deadline_21_days)}` : ""}</p>{exportNote && <p className="export-note">{exportNote}</p>}</div></div><Button variant="secondary" icon="download" disabled={exporting} onClick={() => void downloadPlan()}>{exporting ? "Przygotowuję PDF…" : "Pobierz PDF"}</Button></div>
           <div className="kpi-grid">
-            <article className="kpi primary"><span>Macierzyński brutto / mies.</span><strong className="tabular">{pln(plan.monthly_gross)}</strong><small>stawka {maternityRate}{work > 0 ? " · etat obniża tylko rodzicielski" : ""}</small></article>
+            <article className="kpi primary"><span>{benefitKind === "pregnancy" ? "Zasiłek chorobowy brutto / mies." : "Macierzyński brutto / mies."}</span><strong className="tabular">{pln(plan.monthly_gross)}</strong><small>podstawa po 13,71% {pln(plan.benefit_base ?? 0)} · {maternityRate}{plan.uplift_applied ? " · podwyższenie do 1000 zł" : ""}</small></article>
             <article className="kpi"><span>Szacunkowo netto</span><strong className="tabular">{pln(plan.monthly_net)}</strong><small>po zaliczce na PIT 12%</small></article>
-            <article className="kpi"><span>Łączny czas opieki</span><strong className="tabular">{plan.total_weeks} tyg.</strong><small>ok. {plan.total_months_approx} mies.</small></article>
+            <article className="kpi"><span>{plan.payer?.title ? `Płatnik: ${plan.payer.title}` : "Łączny czas opieki"}</span><strong className="tabular">{plan.total_weeks} tyg.{plan.total_extra_days ? ` ${plan.total_extra_days} dni` : ""}</strong><small>{plan.payer?.note || `ok. ${plan.total_months_approx} mies.`}</small></article>
           </div>
+          {plan.entitled === false && <p className="form-error">{plan.denial_reason}</p>}
+          {plan.event === "ciaza_l4" && plan.pregnancy?.limit_days ? <p className="import-note">Okres zasiłkowy {plan.pregnancy.sick_days_paid} dni (pracodawca {plan.pregnancy.employer_days}, ZUS {plan.pregnancy.zus_sick_days}). Rehabilitacja {plan.pregnancy.rehab_days} dni.</p> : null}
+          {plan.notes?.map((note) => <p className="helper" key={note}>{note}</p>)}
 
           <section className="timeline-card card">
             <div className="timeline-head"><div><h3>Podział opieki: Mama + Tata</h3><p>Wymiary z silnika zasiłków, w tym 9 tygodni tylko dla drugiego rodzica</p></div><Badge tone="info">{childCount} {childCount === 1 ? "DZIECKO" : "DZIECI"}</Badge></div>
             <div className="timeline-legend"><span><i className="mama" /> Mama</span><span><i className="tata" /> Tata</span><span><i className="shared" /> Do podziału</span></div>
             <div className="parent-row">
-              <div className="parent-label"><div className="avatar mama-avatar">{initials(scenario.user_name)}</div><div><strong>Mama</strong><span>{scenario.first_name}</span></div></div>
+              <div className="parent-label"><div className="avatar mama-avatar">{initials(plan.parents?.mother || parentName || "Matka")}</div><div><strong>{role === "opiekun" ? "Opiekun" : "Mama"}</strong><span>{plan.parents?.mother || parentName || "Matka"}</span></div></div>
               <div className="timeline">
-                <div className="timeline-block maternity" style={{ width: pct(maternitySpan) }}><strong>Macierzyński</strong><span>{maternitySpan} tyg. · {maternityRate}</span></div>
-                <div className="timeline-block parental" style={{ width: pct(breakdown.parental_weeks_mother) }}><strong>Rodzicielski</strong><span>{breakdown.parental_weeks_mother} tyg.</span></div>
+                {maternitySpan > 0 && <div className="timeline-block maternity" style={{ width: pct(maternitySpan) }}><strong>Macierzyński</strong><span>{maternitySpan} tyg. · {maternityRate}</span></div>}
+                {motherShare > 0 && <div className="timeline-block parental" style={{ width: pct(motherShare) }}><strong>Rodzicielski</strong><span>{motherShare} tyg.</span></div>}
                 <div className="timeline-empty" />
               </div>
             </div>
             <div className="parent-row">
-              <div className="parent-label"><div className="avatar tata-avatar">MK</div><div><strong>Tata</strong><span>Marek</span></div></div>
+              <div className="parent-label"><div className="avatar tata-avatar">{initials(plan.parents?.father || secondParent || "Ojciec")}</div><div><strong>Tata</strong><span>{plan.parents?.father || secondParent || "Ojciec"}</span></div></div>
               <div className="timeline">
                 <div className="timeline-offset" style={{ width: pct(maternitySpan) }} />
-                <div className="timeline-block father" style={{ width: pct(breakdown.parental_weeks_father_exclusive) }}><strong>{breakdown.parental_weeks_father_exclusive} tyg.</strong><span>wyłączne</span></div>
-                <div className="timeline-block paternity" style={{ width: pct(breakdown.paternity_weeks) }}><strong>{breakdown.paternity_weeks} tyg.</strong><span>ojcowski</span></div>
+                {fatherShare > 0 && <div className="timeline-block father" style={{ width: pct(fatherShare) }}><strong>{fatherShare} tyg.</strong><span>70%</span></div>}
+                {breakdown.paternity_weeks > 0 && <div className="timeline-block paternity" style={{ width: pct(breakdown.paternity_weeks) }}><strong>{breakdown.paternity_weeks} tyg.</strong><span>ojcowski</span></div>}
               </div>
             </div>
-            <div className="timeline-scale"><span>Poród</span><span>{maternitySpan} tyg.</span><span>{maternitySpan + breakdown.parental_weeks_mother} tyg.</span><span>{span} tyg.</span></div>
+            <div className="timeline-scale"><span>Poród</span><span>{maternitySpan} tyg.</span><span>{maternitySpan + motherShare} tyg.</span><span>{span} tyg.</span></div>
             <div className="quota-note"><Icon name="info" size={18} /><span><strong>9 tygodni jest wyłączne dla drugiego rodzica.</strong> Niewykorzystana część nie przechodzi na pierwszego rodzica. Urlop rodzicielski można podzielić na maksymalnie 5 części do końca roku, w którym dziecko kończy 6 lat.</span></div>
           </section>
 
@@ -487,13 +681,13 @@ function CalculatorView({ scenario, legislation }: { scenario: Scenario; legisla
             <div className="table-wrap">
               <table><thead><tr><th>Miesiąc</th><th>Rodzic</th><th>Rodzaj świadczenia</th><th>Stawka</th><th className="right">Kwota brutto</th></tr></thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.month_label}>
-                    <td className="tabular">{row.month_label}</td>
-                    <td><span className="person-cell"><i className="person-dot mama" /> {row.parent}</span></td>
-                    <td>{row.benefit_type}</td>
-                    <td className="tabular">{row.rate}</td>
-                    <td className="right tabular"><strong>{pln(row.gross_amount)}</strong></td>
+                {rows.map((row, index) => (
+                  <tr key={`${row.month_label}-${row.parent}-${row.benefit_type}-${index}`}>
+                    <td className="tabular" data-label="Miesiąc">{row.month_label}</td>
+                    <td data-label="Rodzic"><span className="person-cell"><i className={`person-dot ${row.parent === (plan.parents?.father || "") ? "tata" : "mama"}`} /> {row.parent}</span></td>
+                    <td data-label="Świadczenie">{row.benefit_type}</td>
+                    <td className="tabular" data-label="Stawka">{row.rate}</td>
+                    <td className="right tabular" data-label="Kwota brutto"><strong>{pln(row.gross_amount)}</strong></td>
                   </tr>
                 ))}
               </tbody></table>
@@ -517,7 +711,7 @@ function pdfChipStatus(item: PdfCase) {
   return "Do analizy";
 }
 
-function PdfView() {
+function PdfView({ onParsed }: { onParsed: (item: PdfCase) => void }) {
   const [cases, setCases] = useState<PdfCase[]>(FALLBACK_PDF_CASES);
   const [activeKey, setActiveKey] = useState(FALLBACK_PDF_CASES[0].id ?? FALLBACK_PDF_CASES[0].filename);
   const [result, setResult] = useState<PdfCase>(FALLBACK_PDF_CASES[0]);
@@ -538,6 +732,10 @@ function PdfView() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    onParsed(result);
+  }, [result, onParsed]);
 
   async function downloadReport() {
     setExporting(true);
@@ -588,12 +786,15 @@ function PdfView() {
           <div className="confidence"><span>Pewność odczytu AI</span><div className="progress"><span style={{ width: `${result.confidence}%` }} /></div><strong>{result.confidence}%</strong></div>
           <h4>Odczytane dane</h4>
           <dl className="extracted-list">
+            <div><dt>Wnioskodawca</dt><dd>{result.extracted.applicant_name || "Nie odczytano"} · {result.extracted.role || "rola nieodczytana"}</dd></div>
             <div><dt>Tytuł ubezpieczenia</dt><dd>{result.extracted.insurance_title}</dd></div>
             <div><dt>Okres ubezpieczenia</dt><dd className="tabular">{result.extracted.insurance_period}</dd></div>
             <div><dt>Podstawa wymiaru</dt><dd className="tabular">{result.extracted.base_amount}</dd></div>
-            <div><dt>Data porodu</dt><dd className="tabular">{result.extracted.due_or_birth_date}</dd></div>
+            <div><dt>Data porodu / przyjęcia</dt><dd className="tabular">{result.extracted.due_or_birth_date || "Nie odczytano"}</dd></div>
+            <div><dt>Ubezpieczeni u płatnika</dt><dd className="tabular">{result.extracted.insured_count ?? "Nie odczytano"}</dd></div>
             <div><dt>Wnioskowany wariant</dt><dd>{result.extracted.requested_variant}</dd></div>
           </dl>
+          {result.error && <p className="form-error">{result.error}</p>}
           <div className={`completeness ${result.completeness.ok ? "ok" : "bad"}`}><Icon name={result.completeness.ok ? "check" : "alert"} size={20} /><div><strong>{result.completeness.title}</strong><p>{result.completeness.detail}</p></div></div>
         </section>
         <section className={`decision-card card ${result.decision.approved ? "approved" : "denied"}`}>
@@ -1181,6 +1382,7 @@ export default function App() {
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [legislation, setLegislation] = useState<LegislationParams>(FALLBACK_LEGISLATION);
   const [pueOpen, setPueOpen] = useState(false);
+  const [pdfCase, setPdfCase] = useState<PdfCase | null>(null);
   const activeIndex = useMemo(() => navItems.findIndex((item) => item.id === view), [view]);
   const scenario = scenarios.find((item) => item.id === scenarioId) ?? scenarios[0];
 
@@ -1224,7 +1426,7 @@ export default function App() {
   }
 
   const authenticated = authStep === "authenticated-dashboard";
-  const headerName = previewMode ? scenario.user_name : (authUser?.full_name ?? "Anna Kowalska");
+  const headerName = previewMode ? scenario.user_name : (authUser?.full_name ?? "Użytkownik");
   const enterPreview = (selectedId: string) => {
     setScenarioId(selectedId);
     setPreviewMode(true);
@@ -1281,8 +1483,8 @@ export default function App() {
           <div className="progress-mobile"><span style={{ width: `${((activeIndex + 1) / 5) * 100}%` }} /></div>
           <div className="shell content-shell" id="main-content">
             {view === "status" && <StatusView goTo={setView} scenario={scenario} legislation={legislation} />}
-            {view === "calculator" && <CalculatorView scenario={scenario} legislation={legislation} />}
-            {view === "pdf" && <PdfView />}
+            {view === "calculator" && <CalculatorView scenario={scenario} legislation={legislation} pdfCase={pdfCase} />}
+            {view === "pdf" && <PdfView onParsed={setPdfCase} />}
             {view === "documents" && <DocumentsView scenario={scenario} legislation={legislation} />}
             {view === "support" && <SupportView goTo={setView} legislation={legislation} onLegislation={setLegislation} />}
             {pueOpen && <PueInquiry scenario={scenario} onClose={() => setPueOpen(false)} />}

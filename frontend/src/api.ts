@@ -1,4 +1,4 @@
-export const API_BASE = "http://localhost:8000";
+export const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 export const SIMULATION_AS_OF = "2026-06-12";
 
 export type RiskLevel = "warning" | "info" | "ok";
@@ -22,14 +22,29 @@ export type Scenario = {
 export type BenefitPlan = {
   monthly_gross: number;
   monthly_net: number;
+  uplift_applied?: boolean;
+  benefit_base?: number;
+  declared_gross?: number;
+  entitled?: boolean;
+  denial_reason?: string;
+  event?: string;
   total_weeks: number;
+  total_extra_days?: number;
   total_months_approx: number;
+  payer?: { title: string; is_zus: boolean; required_forms: string[]; note: string; insured_count?: number };
+  parents?: { mother: string; father: string; role: string };
+  notes?: string[];
+  pregnancy?: { sick_days_paid: number; employer_days: number; zus_sick_days: number; rehab_days: number; limit_days: number };
   breakdown: {
     maternity_weeks: number;
+    pre_birth_weeks?: number;
     parental_weeks_mother: number;
     parental_weeks_father_exclusive: number;
     paternity_weeks: number;
     premature_weeks: number;
+    extension_weeks?: number;
+    extension_days?: number;
+    parental_cap?: number;
   };
   deadline_21_days: string;
   schedule: {
@@ -46,12 +61,36 @@ export type CalculatorInput = {
   employment_type: string;
   children_count: number;
   due_date: string;
-  start_before_birth: boolean;
+  start_before_birth?: boolean;
   za_zyciem: boolean;
-  premature_extra_weeks: number;
+  premature_extra_weeks?: number;
   variant: string;
-  work_share: number;
+  work_share?: number;
   base_salary_gross: number;
+  parent_name?: string;
+  second_parent_name?: string;
+  parent_role?: string;
+  tygodnie_przed_porodem?: number;
+  tydzien_ciazy_porodu?: number | null;
+  masa_urodzeniowa_g?: number | null;
+  dni_w_szpitalu?: number | null;
+  etat_pracy?: number | null;
+  tygodnie_laczenia?: number | null;
+  wymiar_etatu?: number | null;
+  hospitalizacja_od_dnia?: number | null;
+  hospitalizacja_do_dnia?: number | null;
+  wiek_dziecka_lata?: number | null;
+  wiek_dziecka_miesiace?: number | null;
+  odroczenie_obowiazku_szkolnego?: boolean;
+  liczba_ubezpieczonych?: number;
+  wiek_ubezpieczonego?: number | null;
+  dni_niezdolnosci?: number;
+  miesiace_rehabilitacji?: number;
+  rehabilitacja_w_ciazy?: boolean;
+  waiting_days?: number | null;
+  debt_amount?: number;
+  matka_nie_moze_opiekowac?: boolean;
+  include_paternity?: boolean;
 };
 
 export type PdfCase = {
@@ -63,10 +102,17 @@ export type PdfCase = {
     insurance_title: string;
     insurance_period: string;
     base_amount: string;
-    due_or_birth_date: string;
+    base_amount_value?: number | null;
+    due_or_birth_date: string | null;
     requested_variant: string;
+    applicant_name?: string | null;
+    role?: string | null;
+    employment_type?: string | null;
+    insured_count?: number | null;
   };
   completeness: { ok: boolean; title: string; detail: string };
+  text_layer?: boolean;
+  error?: string | null;
   decision: {
     approved: boolean;
     status_title: string;
@@ -172,65 +218,247 @@ function finite(value: number, fallback: number) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-export function calculateLocally(payload: CalculatorInput, law: LegislationParams = FALLBACK_LEGISLATION): BenefitPlan {
-  const grossBase = Math.max(0, finite(Number(payload.base_salary_gross), 8200));
-  const variant = payload.variant || "81.5";
-  const childrenCount = Math.min(5, Math.max(1, Math.round(finite(Number(payload.children_count), 1))));
-  const workShare = Math.min(50, Math.max(0, finite(Number(payload.work_share), 0))) / 100;
-  const zaZyciem = Boolean(payload.za_zyciem);
-  const prematureWeeks = Math.min(52, Math.max(0, Math.round(finite(Number(payload.premature_extra_weeks), 0))));
-  const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(payload.due_date) ? payload.due_date : "2026-09-18";
-  const [year, month, day] = dueDate.split("-").map(Number);
+const CONTRIBUTION = 0.1371;
+const MIN_WAGE = 4806;
+const BASE_FLOOR = Math.round(MIN_WAGE * (1 - CONTRIBUTION) * 100) / 100;
+const MAX_GROSS = 23550;
+const MAX_BASE = Math.round(MAX_GROSS * (1 - CONTRIBUTION) * 100) / 100;
+const DEBT_LIMIT = Math.round(MIN_WAGE * 0.01 * 100) / 100;
 
+function money(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function optionalNumber(value: number | null | undefined) {
+  return value == null || Number.isNaN(Number(value)) ? null : Number(value);
+}
+
+export function supplementaryWeeks(week: number | null, grams: number | null, days: number | null, stayFrom: number | null = null, stayTo: number | null = null) {
+  if (week == null) return 0;
+  let countedDays = days ?? 0;
+  if (week >= 37 && stayFrom != null && stayTo != null) {
+    countedDays = stayTo >= stayFrom ? Math.max(0, Math.min(stayTo, 28) - Math.max(stayFrom, 5) + 1) : 0;
+  }
+  if (countedDays <= 0) return 0;
+  const counted = Math.ceil(countedDays / 7);
+  if (week < 28 || (grams != null && grams <= 1000)) return Math.min(15, counted);
+  if (week >= 28 && week <= 36) return Math.min(8, counted);
+  if (week >= 37 && countedDays >= 2) return Math.min(8, counted);
+  return 0;
+}
+
+function monthlyAmount(basis: number, rate: number) {
+  const gross = money(basis * rate);
+  const net = money(gross * 0.88);
+  if (gross > 0 && net < 1000) return { gross: 1000, net: 1000, uplift: true };
+  return { gross, net, uplift: false };
+}
+
+export function parsePlnAmount(text: string | null | undefined) {
+  if (!text || /brak|nie odczytano|—/i.test(text)) return null;
+  const match = text.replace(/\s/g, "").match(/(\d+)(?:[,.](\d{1,2}))?/);
+  if (!match) return null;
+  return money(Number(match[1]) + (match[2] ? Number(match[2].padEnd(2, "0")) / 100 : 0));
+}
+
+export function calculateLocally(payload: CalculatorInput, law: LegislationParams = FALLBACK_LEGISLATION): BenefitPlan {
+  const aliases: Record<string, string> = { porod: "porod", birth: "porod", ciaza: "ciaza_l4", ciaza_l4: "ciaza_l4", pregnancy: "ciaza_l4", adopcja: "adopcja", adoption: "adopcja", piecza: "piecza", piecza_zastepcza: "piecza" };
+  const event = aliases[payload.benefit_type] || "porod";
+  const employment = ["uop", "zlecenie", "jdg", "ustanie"].includes(payload.employment_type) ? payload.employment_type : "uop";
+  const children = Math.min(5, Math.max(1, Math.round(finite(Number(payload.children_count), 1))));
+  const zaZyciem = Boolean(payload.za_zyciem);
+  const variant = payload.variant === "100_70" ? "100_70" : "81.5";
+  const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(payload.due_date || "") ? payload.due_date : "";
+  const role = payload.parent_role === "ojciec" || payload.parent_role === "opiekun" ? payload.parent_role : "matka";
+  const applicant = (payload.parent_name || "").trim();
+  const second = (payload.second_parent_name || "").trim();
+  const mother = role === "ojciec" ? second || "Matka" : applicant || (role === "opiekun" ? "Opiekun" : "Matka");
+  const father = role === "ojciec" ? applicant || "Ojciec" : second || (role === "opiekun" ? "Drugi rodzic" : "Ojciec");
+  let declared = Math.max(0, finite(Number(payload.base_salary_gross), 0));
+  const contractFte = Math.min(1, Math.max(0.01, optionalNumber(payload.wymiar_etatu) ?? 1));
+  const notes: string[] = [];
+  if (employment === "uop" && declared > 0) {
+    const floorGross = money(MIN_WAGE * contractFte);
+    if (declared < floorGross) {
+      declared = floorGross;
+      notes.push(`Podstawa UoP podniesiona do podłogi ${contractFte} etatu: ${floorGross.toFixed(2)} zł brutto.`);
+    }
+  }
+  if ((employment === "jdg" || employment === "zlecenie") && declared > MAX_GROSS) declared = MAX_GROSS;
+  let basis = declared <= 0 ? 0 : money(declared * (1 - CONTRIBUTION));
+  if (employment === "jdg" || employment === "zlecenie") basis = Math.min(basis, MAX_BASE);
+  const debt = finite(Number(payload.debt_amount), 0);
+  let entitled = Boolean(dueDate);
+  let denial = dueDate ? "" : "Podaj datę porodu, przyjęcia dziecka albo początku zwolnienia.";
+  if ((employment === "jdg" || employment === "zlecenie") && debt > DEBT_LIMIT) {
+    entitled = false;
+    denial = `Zadłużenie przekracza 1% minimalnego wynagrodzenia (${DEBT_LIMIT.toFixed(2)} zł).`;
+  }
+  const waiting = optionalNumber(payload.waiting_days);
+  if (event === "ciaza_l4" && (employment === "jdg" || employment === "zlecenie") && waiting != null && waiting < 90) {
+    entitled = false;
+    denial = "Do zasiłku chorobowego przy dobrowolnym ubezpieczeniu potrzeba 90 dni podlegania.";
+  }
+  const payBasis = entitled ? basis : 0;
+  const rateFull = 1;
+  const rateMaternity = (variant === "81.5" ? finite(Number(law.rate_single_variant), 81.5) : finite(Number(law.rate_maternity), 100)) / 100;
+  const rateOwn = variant === "81.5" ? rateMaternity : finite(Number(law.rate_parental), 70) / 100;
+  const rateOther = finite(Number(law.rate_parental), 70) / 100;
   const maternityBase = finite(Number(law.maternity_weeks_single), 20);
-  const weekShift = maternityBase - 20;
-  const maternityMap: Record<number, number> = { 1: maternityBase, 2: 31 + weekShift, 3: 33 + weekShift, 4: 35 + weekShift, 5: 37 + weekShift };
-  const maternityWeeks = Math.max(1, maternityMap[childrenCount] ?? maternityBase);
+  const shift = maternityBase - 20;
+  const maternityMap: Record<number, number> = { 1: maternityBase, 2: 31 + shift, 3: 33 + shift, 4: 35 + shift, 5: 37 + shift };
+  let maternity = Math.max(1, maternityMap[children] ?? maternityBase);
   const parentalBase = finite(Number(law.parental_weeks_single), 41);
   const parentalShift = parentalBase - 41;
-  const parentalWeeks = Math.max(1, zaZyciem ? (childrenCount === 1 ? 65 : 67) + parentalShift : childrenCount === 1 ? parentalBase : parentalBase + 2);
-  const paternityWeeks = Math.max(0, finite(Number(law.paternity_weeks), 2));
-  const totalWeeks = maternityWeeks + parentalWeeks + paternityWeeks + prematureWeeks;
-  const rateMaternity = (variant === "81.5" ? finite(Number(law.rate_single_variant), 81.5) : finite(Number(law.rate_maternity), 100)) / 100;
-  const rateParental = variant === "81.5" ? rateMaternity : finite(Number(law.rate_parental), 70) / 100;
-  const effectiveParentalRate = rateParental * (1 - workShare);
-  const monthlyGrossMaternity = Math.round(grossBase * rateMaternity * 100) / 100;
-  const monthlyGrossParental = Math.round(grossBase * effectiveParentalRate * 100) / 100;
-  const monthlyNetMaternity = Math.round(monthlyGrossMaternity * 0.88 * 100) / 100;
-  const maternityMonths = Math.round((maternityWeeks + prematureWeeks) / 4.33);
-  const schedule: BenefitPlan["schedule"] = [];
-
-  for (let idx = 0; idx < 12; idx += 1) {
-    const monthIndex = month - 1 + idx;
-    const y = year + Math.floor(monthIndex / 12);
-    const m = (monthIndex % 12) + 1;
-    const fraction = idx === 0 && day > 1 ? (30 - day + 1) / 30 : 1;
-    const isMaternity = idx < maternityMonths;
-    const amount = Math.round((isMaternity ? monthlyGrossMaternity : monthlyGrossParental) * fraction * 100) / 100;
-    schedule.push({
-      month_label: `${MONTHS_PL[m - 1]} ${y}`,
-      parent: "Anna",
-      benefit_type: isMaternity ? "Macierzyński" : "Rodzicielski",
-      rate: rateLabel(isMaternity ? rateMaternity : effectiveParentalRate),
-      gross_amount: amount,
-    });
+  let parental = Math.max(1, zaZyciem ? (children === 1 ? 65 : 67) + parentalShift : children === 1 ? parentalBase : parentalBase + 2);
+  const ageYears = optionalNumber(payload.wiek_dziecka_lata);
+  if (event === "adopcja" || event === "piecza") {
+    const limit = event === "adopcja" ? 14 : payload.odroczenie_obowiazku_szkolnego ? 10 : 7;
+    if (ageYears != null) {
+      if (ageYears >= limit) {
+        maternity = 0;
+        parental = 0;
+      } else {
+        const left = ((limit - ageYears) * 365) / 7;
+        const minimum = zaZyciem ? 71 : 47;
+        if (left < maternity + parental) {
+          if (left < minimum) {
+            maternity = 9;
+            parental = zaZyciem ? 62 : 38;
+          } else {
+            const granted = Math.floor(left);
+            maternity = Math.min(maternity, granted);
+            parental = granted - maternity;
+          }
+        }
+      }
+    }
   }
-
+  let preWeeks = 0;
+  let postWeeks = maternity;
+  let extraWeeks = 0;
+  if (event === "porod") {
+    preWeeks = Math.min(maternity, Math.min(6, Math.max(0, Math.round(finite(Number(payload.tygodnie_przed_porodem), 0)))));
+    postWeeks = maternity - preWeeks;
+    extraWeeks = supplementaryWeeks(optionalNumber(payload.tydzien_ciazy_porodu), optionalNumber(payload.masa_urodzeniowa_g), optionalNumber(payload.dni_w_szpitalu), optionalNumber(payload.hospitalizacja_od_dnia), optionalNumber(payload.hospitalizacja_do_dnia));
+  }
+  if (event === "ciaza_l4") {
+    postWeeks = 0;
+    preWeeks = 0;
+    parental = 0;
+    extraWeeks = 0;
+  }
+  const fatherExclusive = Math.min(9, parental);
+  const motherParental = Math.max(0, parental - fatherExclusive);
+  let etat = optionalNumber(payload.etat_pracy);
+  if (etat == null) {
+    const legacy = finite(Number(payload.work_share), 0);
+    etat = legacy > 1 ? legacy / 100 : legacy;
+  }
+  etat = Math.min(0.5, Math.max(0, etat));
+  if (employment !== "uop") etat = 0;
+  const ownerPool = role === "ojciec" ? fatherExclusive : motherParental;
+  const combineInput = optionalNumber(payload.tygodnie_laczenia);
+  const combine = etat > 0 ? (combineInput == null ? ownerPool : Math.min(ownerPool, Math.max(0, combineInput))) : 0;
+  const cap = zaZyciem ? (children === 1 ? 130 : 134) : children === 1 ? 82 : 86;
+  const rawExtra = Math.min(combine * etat, Math.max(0, cap - parental));
+  const extensionDaysTotal = Math.floor(rawExtra * 7);
+  const ageMonths = optionalNumber(payload.wiek_dziecka_miesiace);
+  let paternity = payload.include_paternity === false ? 0 : Math.max(0, finite(Number(law.paternity_weeks), 2));
+  if (event === "piecza" || event === "ciaza_l4" || maternity + parental === 0) paternity = 0;
+  if (event === "porod" && ageMonths != null && ageMonths >= 12) paternity = 0;
+  if (event === "adopcja" && ageYears != null && ageYears >= 14) paternity = 0;
+  const insured = Math.round(finite(Number(payload.liczba_ubezpieczonych), 21));
+  const zus = employment === "jdg" || employment === "ustanie" || insured <= 20;
+  const payerTitle = employment === "zlecenie" && !zus ? "Zleceniodawca" : zus ? "ZUS" : "Pracodawca";
+  const forms = employment === "jdg" ? ["ZAM do ZUS"] : zus && employment === "zlecenie" ? ["Z-3a"] : zus && employment === "uop" ? ["Z-3"] : [];
+  const main = monthlyAmount(payBasis, event === "ciaza_l4" ? rateFull : rateMaternity);
+  const sickDays = Math.min(270, Math.max(0, Math.round(finite(Number(payload.dni_niezdolnosci), 0))));
+  const age = optionalNumber(payload.wiek_ubezpieczonego);
+  const employerDays = event === "ciaza_l4" && employment === "uop" ? Math.min(sickDays, age != null && age >= 50 ? 14 : 33) : 0;
+  const rehabDays = event === "ciaza_l4" && sickDays >= 270 ? Math.min(365, Math.max(0, Math.round(finite(Number(payload.miesiace_rehabilitacji), 0)) * 30)) : 0;
+  const totalDays = event === "ciaza_l4"
+    ? sickDays + rehabDays
+    : (preWeeks + postWeeks + extraWeeks + parental) * 7 + extensionDaysTotal + paternity * 7;
+  const schedule: BenefitPlan["schedule"] = [];
+  if (entitled && dueDate && payBasis > 0 && event !== "ciaza_l4") {
+    const care = payload.matka_nie_moze_opiekowac ? father : mother;
+    const chunks: { days: number; parent: string; kind: string; rate: number }[] = [];
+    if (postWeeks) chunks.push({ days: postWeeks * 7, parent: care, kind: "Zasiłek macierzyński", rate: rateMaternity });
+    if (extraWeeks) chunks.push({ days: extraWeeks * 7, parent: care, kind: "Uzupełniający urlop macierzyński", rate: rateFull });
+    const fullParentalRate = role === "ojciec" ? rateOther : rateOwn;
+    const reducedRate = fullParentalRate * (1 - etat);
+    const ownerDays = Math.round(ownerPool * 7);
+    const reducedDays = Math.round(combine * 7);
+    const fullDays = Math.max(0, ownerDays - reducedDays);
+    if (role === "ojciec") {
+      if (fullDays) chunks.push({ days: fullDays, parent: father, kind: "Urlop rodzicielski ojca", rate: rateOther });
+      if (reducedDays) chunks.push({ days: reducedDays, parent: father, kind: "Rodzicielski łączony z pracą", rate: reducedRate });
+      if (extensionDaysTotal) chunks.push({ days: extensionDaysTotal, parent: father, kind: "Wydłużenie za pracę", rate: fullParentalRate });
+      if (motherParental) chunks.push({ days: motherParental * 7, parent: mother, kind: "Urlop rodzicielski matki", rate: rateOwn });
+    } else {
+      if (fullDays) chunks.push({ days: fullDays, parent: mother, kind: "Urlop rodzicielski", rate: rateOwn });
+      if (reducedDays) chunks.push({ days: reducedDays, parent: mother, kind: "Rodzicielski łączony z pracą", rate: reducedRate });
+      if (extensionDaysTotal) chunks.push({ days: extensionDaysTotal, parent: mother, kind: "Wydłużenie za pracę", rate: fullParentalRate });
+      if (fatherExclusive) chunks.push({ days: fatherExclusive * 7, parent: father, kind: "9 tyg. wyłącznie dla drugiego rodzica", rate: rateOther });
+    }
+    const [year, month, day] = dueDate.split("-").map(Number);
+    let cursor = new Date(year, month - 1, day);
+    if (preWeeks) {
+      const preStart = new Date(cursor);
+      preStart.setDate(preStart.getDate() - preWeeks * 7);
+      pushChunk(schedule, preStart, preWeeks * 7, care, "Urlop przed porodem", rateFull, payBasis);
+    }
+    chunks.forEach((chunk) => {
+      pushChunk(schedule, cursor, chunk.days, chunk.parent, chunk.kind, chunk.rate, payBasis);
+      cursor = new Date(cursor);
+      cursor.setDate(cursor.getDate() + chunk.days);
+    });
+    if (paternity) pushChunk(schedule, new Date(year, month - 1, day), paternity * 7, father, "Urlop ojcowski", rateFull, payBasis);
+  }
   return {
-    monthly_gross: monthlyGrossMaternity,
-    monthly_net: monthlyNetMaternity,
-    total_weeks: totalWeeks,
-    total_months_approx: Math.round(totalWeeks / 4.33),
+    monthly_gross: main.gross,
+    monthly_net: main.net,
+    uplift_applied: main.uplift,
+    benefit_base: basis,
+    declared_gross: declared,
+    entitled,
+    denial_reason: denial,
+    event,
+    total_weeks: Math.floor(totalDays / 7),
+    total_extra_days: totalDays % 7,
+    total_months_approx: Math.round(Math.floor(totalDays / 7) / 4.33),
+    payer: { title: payerTitle, is_zus: zus, required_forms: forms, note: zus ? "Zasiłek wypłaca ZUS." : "Zasiłek wypłaca płatnik składek.", insured_count: insured },
+    parents: { mother, father, role },
+    notes,
+    pregnancy: event === "ciaza_l4" ? { sick_days_paid: sickDays, employer_days: employerDays, zus_sick_days: sickDays - employerDays, rehab_days: rehabDays, limit_days: 270 } : undefined,
     breakdown: {
-      maternity_weeks: maternityWeeks,
-      parental_weeks_mother: parentalWeeks - Math.min(9, parentalWeeks),
-      parental_weeks_father_exclusive: Math.min(9, parentalWeeks),
-      paternity_weeks: paternityWeeks,
-      premature_weeks: prematureWeeks,
+      maternity_weeks: postWeeks,
+      pre_birth_weeks: preWeeks,
+      parental_weeks_mother: motherParental,
+      parental_weeks_father_exclusive: fatherExclusive,
+      paternity_weeks: paternity,
+      premature_weeks: extraWeeks,
+      extension_weeks: Math.floor(extensionDaysTotal / 7),
+      extension_days: extensionDaysTotal % 7,
+      parental_cap: cap,
     },
-    deadline_21_days: addDaysIso(dueDate, Math.max(1, finite(Number(law.deadline_days_81_5), 21))),
+    deadline_21_days: dueDate ? addDaysIso(dueDate, Math.max(1, finite(Number(law.deadline_days_81_5), 21))) : "",
     schedule,
   };
+}
+
+function pushChunk(schedule: BenefitPlan["schedule"], start: Date, days: number, parent: string, kind: string, rate: number, basis: number) {
+  const amount = monthlyAmount(basis, rate).gross;
+  for (let offset = 0; offset < days && offset < 800; offset += 1) {
+    const current = new Date(start);
+    current.setDate(start.getDate() + offset);
+    const label = `${MONTHS_PL[current.getMonth()]} ${current.getFullYear()}`;
+    const existing = schedule.find((row) => row.month_label === label && row.parent === parent && row.benefit_type === kind);
+    const share = money(amount / 30);
+    if (existing) existing.gross_amount = money(existing.gross_amount + share);
+    else schedule.push({ month_label: label, parent, benefit_type: kind, rate: rateLabel(rate), gross_amount: share });
+  }
 }
 
 export const FALLBACK_SCENARIOS: Scenario[] = [
@@ -299,25 +527,25 @@ export const FALLBACK_PDF_CASES: PdfCase[] = [
     filename: "ZAM_Anna_Kowalska_2026.pdf",
     pages: 3,
     confidence: 96,
-    extracted: { insurance_title: "Umowa o pracę", insurance_period: "od 14.02.2022 – ciągły", base_amount: "8 200,00 zł", due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres" },
+    extracted: { insurance_title: "Umowa o pracę", insurance_period: "od 14.02.2022 – ciągły", base_amount: "8 200,00 zł", base_amount_value: 8200, due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres", applicant_name: "Anna Kowalska", role: "matka", employment_type: "uop", insured_count: 25 },
     completeness: { ok: true, title: "Dokumentacja kompletna", detail: "ZAM, Z-3 oraz akt urodzenia zostały rozpoznane." },
-    decision: { approved: true, status_title: "PRAWO PRZYZNANE", subtitle: "Warunki do przyznania zasiłku macierzyńskiego zostały spełnione.", monthly_gross: "6 683,00 zł", rate_note: "81,5% podstawy wymiaru", legal_basis: "Ubezpieczona podlega ubezpieczeniu chorobowemu w dniu porodu. Wniosek o wypłatę w wysokości 81,5% złożono w terminie 21 dni (art. 30a ustawy zasiłkowej)." },
+    decision: { approved: true, status_title: "PRAWO PRZYZNANE", subtitle: "Warunki do przyznania zasiłku macierzyńskiego zostały spełnione.", monthly_gross: "5 766,76 zł", rate_note: "81,5% podstawy po odliczeniu 13,71%", legal_basis: "Ubezpieczona podlega ubezpieczeniu chorobowemu w dniu porodu. Wniosek o wypłatę w wysokości 81,5% złożono w terminie 21 dni (art. 30a ustawy zasiłkowej)." },
   },
   {
     id: "jdg_no_90_days",
     filename: "ZAM_JDG_Krotki_Staz_2026.pdf",
     pages: 2,
     confidence: 94,
-    extracted: { insurance_title: "Pozarolnicza działalność gospodarcza (JDG)", insurance_period: "od 01.08.2026 (48 dni przed porodem)", base_amount: "6 500,00 zł", due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres" },
+    extracted: { insurance_title: "Pozarolnicza działalność gospodarcza (JDG)", insurance_period: "od 01.08.2026 (48 dni przed porodem)", base_amount: "6 500,00 zł", base_amount_value: 6500, due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres", applicant_name: "Anna Kowalska", role: "matka", employment_type: "jdg", insured_count: 1 },
     completeness: { ok: true, title: "Dokumentacja kompletna (ZAM + akt urodzenia)", detail: "Dla JDG nie jest wymagane zaświadczenie Z-3." },
-    decision: { approved: true, status_title: "PRAWO PRZYZNANE (WYJĄTEK OD 90 DNI)", subtitle: "Do zasiłku macierzyńskiego nie stosuje się 90-dniowego okresu wyczekiwania.", monthly_gross: "5 297,50 zł", rate_note: "81,5% zadeklarowanej podstawy (możliwa weryfikacja ZUS)", legal_basis: "Art. 29 ust. 1 pkt 1 ustawy zasiłkowej — prawo do zasiłku macierzyńskiego powstaje od pierwszego dnia podlegania dobrowolnemu ubezpieczeniu chorobowemu." },
+    decision: { approved: true, status_title: "PRAWO PRZYZNANE (WYJĄTEK OD 90 DNI)", subtitle: "Do zasiłku macierzyńskiego nie stosuje się 90-dniowego okresu wyczekiwania.", monthly_gross: "4 571,21 zł", rate_note: "81,5% zadeklarowanej podstawy po 13,71%", legal_basis: "Art. 29 ust. 1 pkt 1 ustawy zasiłkowej — prawo do zasiłku macierzyńskiego powstaje od pierwszego dnia podlegania dobrowolnemu ubezpieczeniu chorobowemu." },
   },
   {
     id: "zlecenie_missing_z3a",
     filename: "ZAM_Zlecenie_Brak_Z3a_2026.pdf",
     pages: 1,
     confidence: 91,
-    extracted: { insurance_title: "Umowa zlecenie", insurance_period: "od 10.03.2025 – ciągły", base_amount: "Brak danych w aktach", due_or_birth_date: "18.09.2026", requested_variant: "100% + 70%" },
+    extracted: { insurance_title: "Umowa zlecenie", insurance_period: "od 10.03.2025 – ciągły", base_amount: "Brak danych w aktach", base_amount_value: null, due_or_birth_date: "18.09.2026", requested_variant: "100% + 70%", applicant_name: "Anna Kowalska", role: "matka", employment_type: "zlecenie", insured_count: 12 },
     completeness: { ok: false, title: "Brak zaświadczenia Z-3a od zleceniodawcy", detail: "Wykryto wniosek ZAM, ale brakuje zaświadczenia płatnika składek Z-3a niezbędnego do ustalenia podstawy." },
     decision: { approved: false, status_title: "POSTĘPOWANIE DO UZUPEŁNIENIA", subtitle: "ZUS wezwie płatnika lub ubezpieczoną do złożenia formularza Z-3a (termin 7 dni).", monthly_gross: "Do wyliczenia po wpływie Z-3a", rate_note: "Wariant 100% (20 tyg.) + 70% (32 tyg.)", legal_basis: "§ 2 rozporządzenia MRPiPS w sprawie zakresu informacji o okolicznościach mających wpływ na prawo do zasiłków." },
   },
@@ -326,9 +554,9 @@ export const FALLBACK_PDF_CASES: PdfCase[] = [
     filename: "ZAM_Upadlosc_Pracodawcy_2026.pdf",
     pages: 4,
     confidence: 95,
-    extracted: { insurance_title: "Umowa o pracę (rozwiązana z powodu upadłości)", insurance_period: "01.03.2021 – 15.07.2026 (likwidacja pracodawcy)", base_amount: "7 800,00 zł", due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres" },
+    extracted: { insurance_title: "Umowa o pracę (rozwiązana z powodu upadłości)", insurance_period: "01.03.2021 – 15.07.2026 (likwidacja pracodawcy)", base_amount: "7 800,00 zł", base_amount_value: 7800, due_or_birth_date: "18.09.2026", requested_variant: "81,5% przez cały okres", applicant_name: "Anna Kowalska", role: "matka", employment_type: "ustanie", insured_count: 8 },
     completeness: { ok: true, title: "Dokumentacja kompletna + postanowienie sądu", detail: "Rozpoznano ZAM, świadectwo pracy oraz odpis postanowienia o ogłoszeniu upadłości." },
-    decision: { approved: true, status_title: "PRAWO PRZYZNANE (ART. 30 UST. 1)", subtitle: "Szczególna ochrona w razie ustania zatrudnienia w ciąży z powodu upadłości/likwidacji.", monthly_gross: "6 357,00 zł", rate_note: "Wypłata bezpośrednio przez ZUS", legal_basis: "Art. 30 ust. 1 pkt 1 ustawy zasiłkowej — zasiłek macierzyński przysługuje również w razie urodzenia dziecka po ustaniu ubezpieczenia chorobowego z powodu ogłoszenia upadłości lub likwidacji pracodawcy." },
+    decision: { approved: true, status_title: "PRAWO PRZYZNANE (ART. 30 UST. 1)", subtitle: "Szczególna ochrona w razie ustania zatrudnienia w ciąży z powodu upadłości/likwidacji.", monthly_gross: "5 485,46 zł", rate_note: "Wypłata bezpośrednio przez ZUS", legal_basis: "Art. 30 ust. 1 pkt 1 ustawy zasiłkowej — zasiłek macierzyński przysługuje również w razie urodzenia dziecka po ustaniu ubezpieczenia chorobowego z powodu ogłoszenia upadłości lub likwidacji pracodawcy." },
   },
 ];
 
@@ -350,21 +578,28 @@ export function offlinePdfResult(filename: string): PdfCase {
     id: "offline-upload",
     filename,
     pages: 1,
-    confidence: 70,
+    confidence: 0,
+    text_layer: false,
+    error: "Analiza PDF działa na serwerze. Uruchom API, aby odczytać tekst wniosku. Aplikacja nie podstawia kwot ani dat.",
     extracted: {
-      insurance_title: "Odczyt lokalny niedostępny",
-      insurance_period: "Backend na localhost:8000 nie odpowiada",
-      base_amount: "8 200,00 zł",
-      due_or_birth_date: "18.09.2026",
-      requested_variant: "81,5% przez cały okres",
+      insurance_title: "Nie odczytano",
+      insurance_period: "Nie odczytano",
+      base_amount: "Nie odczytano",
+      base_amount_value: null,
+      due_or_birth_date: null,
+      requested_variant: "Nie odczytano",
+      applicant_name: null,
+      role: null,
+      employment_type: null,
+      insured_count: null,
     },
-    completeness: { ok: false, title: "Tryb offline", detail: "Plik został wybrany, ale analiza PDF działa po uruchomieniu backendu. Poniżej pokazano przykładową symulację." },
+    completeness: { ok: false, title: "Brak analizy", detail: "Plik został wybrany, ale serwer nie odpowiedział. Nie pokazujemy przykładowych kwot." },
     decision: {
       approved: false,
-      status_title: "PODGLĄD OFFLINE",
-      subtitle: "Połącz aplikację z API, aby odczytać tekst PDF i ocenić kompletność wniosku.",
-      monthly_gross: "6 683,00 zł",
-      rate_note: "Przykład: 81,5% podstawy 8 200 zł",
+      status_title: "ANALIZA NIEDOSTĘPNA",
+      subtitle: "Połącz aplikację z API, aby odczytać tekst PDF. Dane nie zostały uzupełnione stałymi.",
+      monthly_gross: "—",
+      rate_note: "Brak wyliczenia",
       legal_basis: "Ustawa z dnia 25 czerwca 1999 r. o świadczeniach pieniężnych z ubezpieczenia społecznego w razie choroby i macierzyństwa.",
     },
   };

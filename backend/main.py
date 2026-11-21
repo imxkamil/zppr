@@ -130,15 +130,38 @@ class CalculatorInput(BaseModel):
     benefit_type: str = "porod"
     employment_type: str = "uop"
     children_count: int = 1
-    due_date: str = "2026-09-18"
+    due_date: str = ""
     start_before_birth: bool = False
     za_zyciem: bool = False
     premature_extra_weeks: int = 0
     variant: str = "81.5"
     work_share: float = 0.0
-    base_salary_gross: float = 8200.0
+    base_salary_gross: float = 0.0
     scenario_label: str = ""
-    parent_name: str = "Anna"
+    parent_name: str = ""
+    second_parent_name: str = ""
+    parent_role: str = "matka"
+    tygodnie_przed_porodem: int = 0
+    tydzien_ciazy_porodu: Optional[int] = None
+    masa_urodzeniowa_g: Optional[int] = None
+    dni_w_szpitalu: Optional[int] = None
+    etat_pracy: Optional[float] = None
+    tygodnie_laczenia: Optional[float] = None
+    wymiar_etatu: Optional[float] = None
+    hospitalizacja_od_dnia: Optional[int] = None
+    hospitalizacja_do_dnia: Optional[int] = None
+    wiek_dziecka_lata: Optional[float] = None
+    wiek_dziecka_miesiace: Optional[float] = None
+    odroczenie_obowiazku_szkolnego: bool = False
+    liczba_ubezpieczonych: int = 21
+    wiek_ubezpieczonego: Optional[int] = None
+    dni_niezdolnosci: int = 0
+    miesiace_rehabilitacji: int = 0
+    rehabilitacja_w_ciazy: bool = True
+    waiting_days: Optional[int] = None
+    debt_amount: float = 0.0
+    matka_nie_moze_opiekowac: bool = False
+    include_paternity: bool = True
 
 
 def pdf_attachment(content: bytes, filename: str) -> Response:

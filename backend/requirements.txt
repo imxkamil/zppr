@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.12
+# 1.24.10 nie ma koła dla Pythona 3.13 (pip próbuje kompilować źródła).
+# 1.26.7 nadal udostępnia `import fitz`.
+pymupdf==1.26.7
+# 0.3.0 nie jest już publikowane; 1.21.1 ma client.models.generate_content używane w pdf_verifier.py.
+google-genai==1.21.1
+reportlab==4.2.2

@@ -299,7 +299,7 @@ def _payer(employment: str, insured_count: int) -> Dict[str, Any]:
         note = "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zlikwidowany 24.10.2026 r."
         title = "ZUS"
     elif employment == "ustanie":
-        forms = ["ZAM", "dokument ustania zatrudnienia"]
+        forms = ["ZAM", "Dokument potwierdzający ustanie zatrudnienia"]
         note = "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS."
         title = "ZUS"
     elif employment == "zlecenie":
@@ -482,6 +482,7 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "limit_days": 270,
             "rehab_in_pregnancy": still_pregnant,
         }
+        notes.append("Urlop ojcowski nie wchodzi w okres ciąży i zwolnienia lekarskiego.")
         display_rate = rate_full
         monthly_gross, monthly_net, uplift = _monthly_amount(basis_for_pay, rate_full)
         total_days = paid_sick + rehab_days
@@ -532,22 +533,28 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         age_months = _optional_number(payload.get("wiek_dziecka_miesiace"))
         paternity_weeks = int(law["paternity_weeks"]) if payload.get("include_paternity", True) else 0
-        if event == "piecza" or event == "ciaza_l4":
+        if paternity_weeks and event == "piecza":
             paternity_weeks = 0
-        if event == "porod" and age_months is not None and age_months >= 12:
+            notes.append("Brak prawa do urlopu ojcowskiego dla rodziny zastępczej. Ten urlop dotyczy urodzenia albo przysposobienia dziecka.")
+        elif paternity_weeks and role == "opiekun":
+            paternity_weeks = 0
+            notes.append("Opiekun nie ma prawa do urlopu ojcowskiego. Ten urlop przysługuje ojcu dziecka.")
+        elif paternity_weeks and event == "porod" and age_months is not None and age_months >= 12:
             paternity_weeks = 0
             notes.append("Urlop ojcowski wygasa z ukończeniem przez dziecko 12 miesięcy.")
-        if event == "adopcja" and age_years is not None and age_years >= 14:
+        elif paternity_weeks and event == "adopcja" and age_years is not None and age_years >= 14:
             paternity_weeks = 0
-        if maternity == 0 and parental == 0:
+            notes.append("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.")
+        elif paternity_weeks and maternity == 0 and parental == 0:
             paternity_weeks = 0
+            notes.append("Urlop ojcowski nie przysługuje, bo urlop na warunkach macierzyńskiego i rodzicielski już nie przysługują.")
 
         care_parent = father if special else mother
         cursor = anchor
         pieces: List[Tuple[int, str, str, float]] = []
         if pre_weeks:
             pre_start = _add_days(anchor, -pre_weeks * 7)
-            pre_seg = _segment(pre_start, pre_weeks * 7, care_parent, "Urlop przed porodem", rate_full, basis_for_pay)
+            pre_seg = _segment(pre_start, pre_weeks * 7, mother, "Urlop przed porodem", rate_full, basis_for_pay)
             if pre_seg:
                 segments.append(pre_seg)
         if post_weeks:
@@ -581,13 +588,21 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             pat = _segment(anchor, paternity_weeks * 7, father, "Urlop ojcowski", rate_full, basis_for_pay)
             if pat:
                 segments.append(pat)
-        notes.append("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki. 9 tygodni rodzicielskiego drugiego rodzica jest liczone po 70% i nie wchodzi w uśrednienie 81,5%.")
+        if special:
+            notes.append("Urlop przed porodem zostaje przy matce. Zasiłek po porodzie i uzupełniający urlop przejmuje ojciec, bo matka nie może sprawować opieki.")
+        else:
+            notes.append("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki.")
+        notes.append("9 tygodni rodzicielskiego drugiego rodzica jest liczone po 70% i nie wchodzi w uśrednienie 81,5%.")
         display_rate = rate_maternity
         monthly_gross, monthly_net, uplift = _monthly_amount(basis_for_pay, rate_maternity if post_weeks or pre_weeks else rate_parental_own)
         total_days = (pre_weeks + post_weeks + extra_weeks + parental) * 7 + extension_weeks * 7 + extension_days + paternity_weeks * 7
         total_weeks = total_days // 7
         extra_day_count = total_days % 7
 
+    if event in ("adopcja", "piecza") and post_weeks == 0 and pre_weeks == 0 and mother_parental == 0 and father_exclusive == 0:
+        monthly_gross = 0.0
+        monthly_net = 0.0
+        uplift = False
     schedule = _schedule(segments, anchor) if entitled else []
     deadline_days = max(1, int(law["deadline_days_81_5"]))
     deadline = "" if date_missing else (anchor + timedelta(days=deadline_days)).isoformat()

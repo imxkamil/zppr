@@ -16,6 +16,18 @@ DEFAULT_LEGISLATION: Dict[str, Any] = {
 
 LEGISLATION_KEYS = tuple(DEFAULT_LEGISLATION.keys())
 
+SEED_ORGANIZATIONS = [
+    ("strata", "STRATA I ŻAŁOBA", "Fundacja Ernesta",
+     "Bezpłatne wsparcie psychologiczne i prawne po stracie ciąży i dziecka.",
+     "22 350 00 50 (wew. 1)", "https://fundacjaernesta.pl", 1),
+    ("wczesniactwo", "WCZEŚNIACTWO", "Fundacja Wcześniak",
+     "Informacja, grupy wsparcia i pomoc rodzinom wcześniaków w szpitalach.",
+     "+48 22 121 80 55", "https://wczesniak.pl", 1),
+    ("za_zyciem", "WSPARCIE RODZINY", "Fundacja Dajemy Dzieciom Siłę",
+     "Pomoc psychologiczna i prawna dla dzieci oraz opiekunów.",
+     "116 111 (dzieci i młodzież) / 800 100 100 (rodzice i opiekunowie)", "https://fdds.pl", 1),
+]
+
 
 class _Connection:
     """Zamyka połączenie po wyjściu z `with` — na Windows otwarty plik SQLite blokuje reload."""
@@ -57,21 +69,12 @@ def init_db() -> None:
         """)
         count = conn.execute("SELECT COUNT(*) FROM organizations").fetchone()[0]
         if count == 0:
-            seed_orgs = [
-                ("strata", "STRATA I ŻAŁOBA", "Fundacja Ernesta",
-                 "Bezpłatne wsparcie psychologiczne i prawne po stracie ciąży i dziecka.",
-                 "22 123 00 80", "https://fundacjaernesta.pl", 1),
-                ("wczesniactwo", "WCZEŚNIACTWO", "Fundacja Wcześniak",
-                 "Informacja, grupy wsparcia i pomoc rodzinom wcześniaków w szpitalach.",
-                 "22 231 35 50", "https://wczesniak.pl", 1),
-                ("za_zyciem", "WSPARCIE RODZINY", "Fundacja Dajemy Dzieciom Siłę",
-                 "Pomoc psychologiczna i prawna dla dzieci oraz opiekunów.",
-                 "116 111", "https://fdds.pl", 1),
-            ]
             conn.executemany(
                 "INSERT INTO organizations (category, badge, name, description, phone, website, verified) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                seed_orgs
+                SEED_ORGANIZATIONS,
             )
+        for _category, _badge, name, _description, phone, _website, _verified in SEED_ORGANIZATIONS:
+            conn.execute("UPDATE organizations SET phone = ? WHERE name = ?", (phone, name))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS legislation_params (
                 id INTEGER PRIMARY KEY CHECK (id = 1),

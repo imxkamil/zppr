@@ -2,7 +2,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from database import (
@@ -191,6 +191,15 @@ class VerificationExport(BaseModel):
 
 class ChecklistExport(BaseModel):
     scenario_id: str
+    parent_name: Optional[str] = None
+    due_date: Optional[str] = None
+    variant: Optional[str] = None
+    benefit_type: Optional[str] = None
+    employment_type: Optional[str] = None
+    payer_title: Optional[str] = None
+    payer_is_zus: Optional[bool] = None
+    required_forms: Optional[List[str]] = None
+    payer_note: Optional[str] = None
 
 
 @app.post("/api/export/calculator-pdf")
@@ -218,7 +227,8 @@ def export_checklist_pdf(data: ChecklistExport):
     if scenario is None:
         raise HTTPException(status_code=404, detail="Nieznany scenariusz")
     try:
-        content, filename = render_checklist_pdf(scenario)
+        overlay = data.model_dump(exclude={"scenario_id"}, exclude_none=True)
+        content, filename = render_checklist_pdf(scenario, overlay or None)
     except Exception:
         raise HTTPException(status_code=400, detail="Nie udało się przygotować checklisty PDF.")
     return pdf_attachment(content, filename)

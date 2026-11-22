@@ -1,40 +1,82 @@
-# eZUS Rodzic+
+# eZUS Rodzic+ — Asystent Świadczeń Rodzicielskich (2026)
 
-## Uruchomienie w Dockerze
+**Zasiłkowy Przewodnik Przyszłego Rodzica**
 
-Z katalogu projektu:
+eZUS Rodzic+ prowadzi przyszłego rodzica od sprawdzenia prawa do świadczenia aż po wniosek i termin. Obejmuje umowę o pracę, działalność gospodarczą, umowę zlecenie, ustanie zatrudnienia, adopcję i pieczę zastępczą. Po drodze jest weryfikacja dokumentów PDF, deterministyczny kalkulator stanu prawnego 2026 oraz przygotowanie wniosku ZAM, właściwego zaświadczenia płatnika (Z-3 albo Z-3a) i terminarza `.ics`.
+
+Narzędzie ma charakter informacyjno-edukacyjny. Nie stanowi decyzji administracyjnej ZUS ani porady prawnej.
+
+## Mapa zgodności z kryteriami oceny jury ZUS
+
+Wagi poniżej sumują się do 100% oficjalnej oceny. Każdy wiersz wskazuje, gdzie w tym repozytorium dane kryterium jest zrealizowane.
+
+| Kryterium | Waga | Pokrycie w repozytorium |
+| --- | --- | --- |
+| Związek z wyzwaniem | 25% | Silnik w [`backend/engine.py`](backend/engine.py) liczy ciążę z L4 i świadczeniem rehabilitacyjnym, urlop macierzyński oraz uzupełniający przy wcześniactwie i hospitalizacji noworodka, wariant 81,5% wobec 100% + 70% z 9 tygodniami tylko dla drugiego rodzica, łączenie rodzicielskiego z pracą do 0,5 etatu, adopcję i pieczę z gwarancją 9+38 albo 9+62 tygodni oraz próg płatnika 20 ubezpieczonych. Reforma z 24.10.2026 r. jest w ścieżce dokumentów: ZUR, ZAO i Z-3b nie są wymagane, wniosek idzie na ZAM. Sytuacje trudne są w Strefie Wsparcia. |
+| Kompletność projektu i UX | 25% | Pięć zakładek w [`frontend/src/App.tsx`](frontend/src/App.tsx): Mój Status, Kalkulator, Weryfikator PDF, Wnioski i Dokumenty, Strefa Wsparcia. Wejście bez logowania pokazuje sam wariant zatrudnienia. Profil Anny Kowalskiej, PESEL i wylogowanie pojawiają się dopiero po symulacji mObywatel / login.gov.pl. Formularz chowa pola, które przy danym zdarzeniu nie mają skutku prawnego. Kalkulator ma 9 presetów 2026. Układ działa na desktopie, tablecie i telefonie do 520 px ([`frontend/src/index.css`](frontend/src/index.css)): wysoki kontrast, skala A− / A / A+ i link „Przejdź do treści”. |
+| Pomysł | 20% | Przeglądarka maluje plan od razu lustrem z [`frontend/src/api.ts`](frontend/src/api.ts), a wynik z serwera go zastępuje. Serwer liczy podstawę przez `Decimal` i `ROUND_HALF_UP`. Oś „Matka + Ojciec” pokazuje podział opieki. Ten sam plan zasila kreator ZAM i plik `.ics` z terminem wariantu 81,5%. |
+| Oryginalność | 15% | Architektura **Zero-Hallucination Legal Engine + Selective AI**: stawki, tygodnie i kwoty są w kodzie i w SQLite, a [`backend/tests/audit_2026.py`](backend/tests/audit_2026.py) sprawdza je regresyjnie. Gemini 2.5 Flash wchodzi tylko jako opcjonalny OCR, gdy PDF nie ma warstwy tekstowej i ustawiono `GEMINI_API_KEY`. Bez klucza skan nie dostaje wymyślonej kwoty ani daty. |
+| Potencjał wdrożeniowy | 15% | Wygląd i wejście są oparte na wzorcu PUE/eZUS oraz Węzła Krajowego (login.gov.pl). Stawki i wymiary urlopu zmienia [`PUT /api/admin/params`](backend/main.py) w SQLite, bez edycji wzoru. [`docker-compose.yml`](docker-compose.yml) stawia całość jedną komendą. Ten sam audyt `audit_2026.py` pilnuje silnika, parsera PDF i żywego API. |
+
+## Architektura i rola AI
+
+```text
+Przeglądarka
+  React 19 + TypeScript + Vite + Tailwind
+  frontend/src/App.tsx · frontend/src/api.ts
+        │  fetch, bez obcinania prefiksu /api
+        ▼
+FastAPI (Python 3.12 w Dockerze)
+  backend/main.py
+        ├── backend/engine.py          silnik 2026, Decimal
+        ├── backend/database.py        SQLite: stawki i organizacje
+        ├── backend/pdf_verifier.py    PyMuPDF, parser, opcjonalny Gemini 2.5 Flash
+        └── backend/pdf_generator.py   ReportLab: plan, raport, checklista
+```
+
+Obraz backendu to `python:3.12-slim` ([`backend/Dockerfile`](backend/Dockerfile)). Lokalnie ten sam `requirements.txt` wstaje też na Pythonie 3.13. Frontend w kontenerze buduje Node 20 i serwuje nginx ([`frontend/Dockerfile`](frontend/Dockerfile), [`frontend/nginx.conf`](frontend/nginx.conf)).
+
+### Gdzie użyto AI, a gdzie działa logika deterministyczna
+
+Wymóg formalny: pkt 4 i 9 regulaminu. Model nie liczy świadczenia.
+
+| Miejsce | Deterministyczne | AI |
+| --- | --- | --- |
+| Wytworzenie repozytorium | Kod, testy i kontenery są w gicie i wstają bez klucza modelu: `docker compose up --build` albo dwa procesy lokalne. | Interfejs, silnik, API i konteneryzacja powstały przy asystencie w Cursorze. |
+| Kalkulator i płatnik | [`backend/engine.py`](backend/engine.py) oraz lustro `calculateLocally` w [`frontend/src/api.ts`](frontend/src/api.ts). Kwota, tygodnie, próg 20 osób i termin 21 dni nie wołają modelu. | Nie. |
+| Oś czasu, wniosek ZAM, plik `.ics` | Składane w przeglądarce z planu kalkulatora. „Wysłanie” wniosku jest symulacją i nie zapisuje się w ZUS. | Nie. |
+| Radar ryzyk | Reguły scenariusza: ciągłość do porodu, skok podstawy, zadłużenie JDG powyżej 1% płacy minimalnej. | Nie. Modal „Jak działa AI w tym module?” tylko to opisuje. |
+| PDF z warstwą tekstu | PyMuPDF i lokalny parser w [`backend/pdf_verifier.py`](backend/pdf_verifier.py). Puste pole zostaje puste. | Nie. |
+| Skan bez tekstu | Bez `GEMINI_API_KEY` wraca komunikat o braku OCR. Kwota i data nie są zgadywane. | Z kluczem Gemini 2.5 Flash uzupełnia tylko braki albo czyta skan (do dwóch stron). |
+| Stawki 2026 | SQLite i panel w Strefie Wsparcia. Reset wraca do wartości ustawowych. | Nie. |
+
+## Szybkie uruchomienie
+
+### Docker Compose
+
+Z katalogu głównego repozytorium:
 
 ```bash
 docker compose up --build
 ```
 
-Frontend: [http://localhost:5173/](http://localhost:5173/)  
-API: [http://localhost:8000/docs](http://localhost:8000/docs)
+| Co otworzyć | Adres |
+| --- | --- |
+| Aplikacja | [http://localhost:5173/](http://localhost:5173/) |
+| API | [http://localhost:8000/](http://localhost:8000/) |
+| Swagger | [http://localhost:8000/docs](http://localhost:8000/docs) |
 
-Obraz backendu to `python:3.12-slim` z czcionkami DejaVu i Liberation, żeby PDF miał polskie znaki. Frontend buduje się na `node:20-alpine` i jest serwowany przez nginx na porcie 5173.
+Port 5173 na hoście wskazuje nginx w kontenerze (port 80). Obraz frontendu buduje się bez `VITE_API_URL`, więc przeglądarka woła API pod `http://localhost:8000`. To działa na tej samej maszynie co kontenery.
 
-Asystent świadczeń rodzicielskich na demonstrację. Aplikacja prowadzi przez symulowane logowanie mObywatel, pokazuje status ubezpieczenia, liczy zasiłek macierzyński i rodzicielski, sprawdza kompletność wniosku PDF oraz podpowiada dokumenty, terminy i zweryfikowane organizacje pomocowe.
+### Lokalnie (Windows)
 
-Wyniki mają charakter informacyjny i nie są decyzją ZUS.
-
-## Architektura
-
-- **Frontend:** React 19 + TypeScript + Vite + Tailwind (`frontend/`). Jeden widok `src/App.tsx` i klient API `src/api.ts`.
-- **Backend:** Python + FastAPI (`backend/main.py`), uruchamiany przez uvicorn na porcie 8000.
-- **Silnik świadczeń:** `backend/engine.py` — stawki 2026, wariant 81,5% albo 100% + 70%, zaliczka PIT 12%, harmonogram 12 miesięcy, trzy scenariusze testowe.
-- **Baza:** SQLite (`backend/ezus_rodzic.db`) — organizacje Strefy Wsparcia oraz edytowalne parametry ustawowe (`backend/database.py`). Silnik zasiłków czyta stawki i wymiary z tej tabeli.
-- **PDF przychodzące:** PyMuPDF wyciąga tekst, lokalny parser czyta pola wniosku, a przy ustawionym `GEMINI_API_KEY` Gemini uzupełnia tylko braki albo robi OCR skanu. Bez klucza skan nie dostaje sztucznych kwot (`backend/pdf_verifier.py`).
-- **PDF wychodzące:** ReportLab z czcionką Arial (polskie znaki) albo bezpieczną transliteracją, gdy czcionki systemowej nie ma (`backend/pdf_generator.py`).
-
-## Uruchomienie
-
-Potrzebne są Python 3.13 i Node.js. W dwóch terminalach:
+Dwa terminale. Katalog roboczy backendu musi być `backend`, bo importy są płaskie.
 
 ```powershell
 cd backend
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
+.\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 ```powershell
@@ -43,70 +85,82 @@ npm install
 npm run dev
 ```
 
-Frontend: [http://localhost:5173/](http://localhost:5173/)  
-API: [http://127.0.0.1:8000](http://127.0.0.1:8000)  
-Dokumentacja OpenAPI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-
-Opcjonalnie, do analizy wgrywanych PDF przez Gemini:
+Opcjonalny OCR skanów, w tym samym terminalu co uvicorn:
 
 ```powershell
 $env:GEMINI_API_KEY = "klucz"
 ```
 
-Bez tej zmiennej weryfikator i tak zwraca wynik z lokalnego odczytu tekstu.
+### Lokalnie (Linux)
 
-`backend/requirements.txt` używa `pymupdf==1.26.7` i `google-genai==1.21.1`, bo wskazane wcześniej wydania nie instalują się na Pythonie 3.13.
+```bash
+cd backend
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
 
-## Endpointy
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-| Metoda | Ścieżka | Do czego służy |
+```bash
+export GEMINI_API_KEY="klucz"
+```
+
+Frontend: [http://127.0.0.1:5173/](http://127.0.0.1:5173/). API: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). Gdy 5173 jest zajęty, Vite bierze następny port. Wtedy przed `npm run dev` ustaw `VITE_API_URL=http://127.0.0.1:8000`.
+
+Bez działającego API interfejs zostaje na danych z [`frontend/src/api.ts`](frontend/src/api.ts): te same scenariusze, lustro kalkulatora, sprawy PDF i organizacje. Przyciski PDF otwierają wtedy podgląd wydruku przeglądarki.
+
+### Test regresyjny
+
+Najpierw uvicorn z aktualnego kodu, potem w drugim terminalu:
+
+```powershell
+cd backend
+$env:API_PORT = "8000"
+.\.venv\Scripts\python.exe tests\audit_2026.py
+```
+
+```bash
+cd backend
+API_PORT=8000 .venv/bin/python tests/audit_2026.py
+```
+
+Skrypt sam zdejmuje `GEMINI_API_KEY`, żeby parser szedł offline. Sprawdza silnik, oba tory PDF i — gdy `API_PORT` jest ustawiony — żywe `/openapi.json`, symulację i CORS. Oczekiwany wynik pełnego przebiegu: **0 FAIL**. Bez `API_PORT` część o żywym API jest pominięta, a reszta i tak się liczy. Opis przypadków jest w [`DOKUMENTACJA.md`](DOKUMENTACJA.md), sekcja 16.
+
+### Ścieżka demo dla jury
+
+1. Na starcie wejdź w **Tryb szybkiego podglądu** (UoP, JDG albo zlecenie) albo zaloguj się symulacją skanu mObywatel. Podgląd nie pokazuje danych osoby. Po skanie widać profil Anny Kowalskiej.
+2. **Mój Status** pokazuje ubezpieczenie, wyczekiwanie, płatnika, przykładowe e-ZLA i radar ryzyk tego wariantu.
+3. **Kalkulator** ma 9 presetów po lewej. Porównaj 81,5% z 100% + 70%, ciążę, adopcję, pieczę, szpital i łączenie z pracą. **Pobierz PDF** zapisuje `plan-swiadczen.pdf`.
+4. **Weryfikator PDF** otwiera cztery sprawy testowe albo przyjmuje własny plik. **Przenieś dane do kalkulatora i policz** wypełnia formularz odczytanymi polami.
+5. **Wnioski i Dokumenty** biorą imię, datę, wariant i płatnika z kalkulatora. Kreator otwiera ZAM. **Dodaj do kalendarza** zapisuje termin `.ics`.
+6. **Strefa Wsparcia** ma organizacje i panel stawek. Zmiana stawki w `PUT /api/admin/params` przelicza kalkulator bez zmiany kodu.
+
+### Endpointy
+
+| Metoda | Ścieżka | Rola |
 | --- | --- | --- |
-| GET | `/api/health` | Sprawdzenie, czy API żyje |
-| POST | `/api/auth/mobywatel/init` | Start sesji logowania mObywatel |
-| POST | `/api/auth/mobywatel/confirm/{session_id}` | Symulacja skanu kodu QR |
-| GET | `/api/scenarios` | Lista trzech scenariuszy testowych |
-| GET | `/api/scenarios/{scenario_id}` | Status, płatnik, e-ZLA i ryzyka jednego scenariusza |
-| POST | `/api/calculator/simulate` | Wyliczenie planu świadczeń |
-| GET | `/api/pdf/test-cases` | Cztery gotowe sprawy do weryfikatora |
-| POST | `/api/pdf/verify` | Analiza wgranego pliku PDF (`multipart/form-data`, pole `file`) |
-| POST | `/api/export/calculator-pdf` | PDF planu świadczeń |
+| GET | `/api/health` | Czy API żyje |
+| POST | `/api/auth/mobywatel/init` | Start sesji mObywatel |
+| POST | `/api/auth/mobywatel/confirm/{session_id}` | Symulacja skanu QR |
+| GET | `/api/scenarios` | Trzy warianty wejścia: `uop_over_20`, `jdg_active`, `zlecenie_no_waiting` |
+| GET | `/api/scenarios/{scenario_id}` | Status, płatnik, e-ZLA i ryzyka |
+| POST | `/api/calculator/simulate` | Plan świadczeń |
+| GET | `/api/pdf/test-cases` | Cztery sprawy weryfikatora |
+| POST | `/api/pdf/verify` | Upload PDF (`multipart/form-data`, pole `file`) |
+| POST | `/api/export/calculator-pdf` | PDF planu |
 | POST | `/api/export/verification-pdf` | PDF raportu z weryfikatora |
 | POST | `/api/export/checklist-pdf` | PDF checklisty dla `scenario_id` |
-| GET | `/api/support/organizations?q=` | Lista organizacji, z wyszukiwaniem |
-| POST | `/api/support/organizations` | Dodanie organizacji w panelu admina |
+| GET | `/api/support/organizations?q=` | Organizacje, z wyszukiwaniem |
+| POST | `/api/support/organizations` | Nowa organizacja |
 | DELETE | `/api/support/organizations/{org_id}` | Usunięcie organizacji |
-| GET | `/api/admin/params` | Aktualne stawki i wymiary z SQLite |
-| PUT | `/api/admin/params` | Zapis stawek z panelu administracyjnego |
-| POST | `/api/admin/params/reset` | Przywrócenie wartości ustawowych 2026 |
+| GET | `/api/admin/params` | Stawki i wymiary z SQLite |
+| PUT | `/api/admin/params` | Zapis stawek z panelu |
+| POST | `/api/admin/params/reset` | Powrót do wartości 2026 |
 
-Identyfikatory scenariuszy: `uop_over_20`, `jdg_active`, `zlecenie_no_waiting`.
-
-## Tryb offline
-
-Każde wywołanie API w przeglądarce ma limit czasu. Gdy `localhost:8000` nie odpowiada, interfejs zostaje na danych zaszytych w `frontend/src/api.ts`: te same trzy scenariusze, ten sam wzór kalkulatora, cztery sprawy PDF i trzy organizacje startowe. Przyciski PDF (`Pobierz PDF`, `Pobierz raport`, `Utwórz checklistę PDF`) próbują pobrać plik z backendu, a przy braku połączenia otwierają podgląd wydruku przeglądarki.
-
-## Jak przejść demo
-
-1. Otwórz frontend i wybierz **Zaloguj do PUE/eZUS przez mObywatel**, potem **zasymuluj skan**. Można też wejść od razu w podgląd scenariusza.
-2. Na pasku **Scenariusz testowy** przełącz UoP, JDG i umowę zlecenie. Status oraz zakładka dokumentów zmieniają płatnika: pracodawca przy UoP powyżej 20 osób, ZUS przy JDG i zleceniu.
-3. W kalkulatorze porównaj 81,5% z 100% + 70%, wybierz zdarzenie (poród, ciąża z rehabilitacją, adopcja, piecza), urlop przed porodem, hospitalizację i łączenie z pracą do połowy etatu. Kwota wejściowa to brutto przed odliczeniem 13,71%. **Pobierz PDF** zapisuje `plan-swiadczen.pdf`.
-4. W weryfikatorze kliknij jeden z czterech przypadków albo wgraj PDF. **Pobierz raport** zapisuje `raport-weryfikacji.pdf`.
-5. W dokumentach **Utwórz checklistę PDF** zapisuje checklistę dopasowaną do bieżącego scenariusza.
-6. W Strefie Wsparcia wyszukaj organizację. W panelu administracyjnym, na zakładce **Parametry ustawowe i stawki ZUS**, zmień stawkę wariantu stałego i sprawdź przeliczenie w kalkulatorze.
-7. Kliknij **PUE/eZUS · aktywne**, wyślij zapytanie i odczytaj numer sprawy `ZUS/PUE/2026/...`.
-8. W dokumentach wypełnij wniosek ZAM, podejrzyj wniosek o urlop i złóż symulację odpisu aktu urodzenia.
-
-## Zakres wykorzystania AI (zgodnie z pkt 4 i 9 regulaminu)
-
-### AI w procesie wytwórczym
-
-Interfejs, silnik wyliczeń, integracja API i konteneryzacja powstały przy wsparciu asystenta w Cursorze. Gotowy kod jest w tym repozytorium. Aplikację da się zbudować i uruchomić bez żadnego modelu językowego: `docker compose up --build` albo dwa lokalne procesy opisane wyżej.
-
-### AI w działaniu aplikacji
-
-W samej aplikacji model jest opcjonalny i ograniczony do dwóch miejsc, opisanych też w modalach **Jak działa AI w tym module?**:
-
-- **Weryfikator PDF, odczyt hybrydowy.** PyMuPDF wyciąga warstwę tekstową. Lokalny parser czyta z niej imię i rolę (matka, ojciec, opiekun), datę porodu, przewidywanego porodu albo przyjęcia na wychowanie, podstawę składek lub wynagrodzenie, tytuł ubezpieczenia (UoP, JDG, zlecenie) oraz liczbę ubezpieczonych. Brakujące pole zostaje puste. Jeśli ustawiono `GEMINI_API_KEY`, Gemini 2.5 Flash uzupełnia tylko puste pola, a przy skanie bez tekstu może zrobić OCR. Bez klucza skan zwraca komunikat o braku warstwy tekstowej i nie podstawia kwoty ani daty.
-- **Radar ryzyk.** Karty nie są swobodną odpowiedzią czatu. Dla scenariusza dokładane są reguły: ciągłość ubezpieczenia do porodu, nagłe podwyższenie podstawy składek oraz zadłużenie JDG powyżej 1% minimalnego wynagrodzenia.
-
-Kalkulator nie wywołuje modelu. Liczy stan prawny na 2026 rok: Kodeks pracy (Dz.U. 2026 poz. 1245) oraz ustawa zasiłkowa (Dz.U. 2026 poz. 854), z uwzględnieniem rozporządzeń MRPiPS z 11.03.2025 i 27.09.2026. Obejmuje poród, ciążę z okresem 270 dni i świadczeniem rehabilitacyjnym, adopcję do 14. roku życia, pieczę zastępczą do 7. albo 10. roku, urlop przed porodem, uzupełniający urlop macierzyński, łączenie rodzicielskiego z pracą do połowy etatu oraz podział między rodziców. Stawki bazowe i wymiary urlopu przy jednym dziecku są w SQLite i da się je zmienić w panelu parametrów. Odliczenie 13,71%, podłoga i sufit podstawy oraz próg 20 ubezpieczonych są w silniku.
+Pełny opis algorytmu, macierzy etykiet, przepływu między zakładkami i list kontrolnych GUI jest w [`DOKUMENTACJA.md`](DOKUMENTACJA.md).

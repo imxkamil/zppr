@@ -247,6 +247,19 @@ def _insured_count(text: str) -> Optional[int]:
     return None
 
 
+def _benefit_type(text: str, date_kind: Optional[str]) -> str:
+    lowered = text.lower()
+    if "piecz" in lowered:
+        return "piecza"
+    if "przysposob" in lowered or "adopc" in lowered:
+        return "adopcja"
+    if date_kind == "przyjecie":
+        return "adopcja"
+    if ("ciąż" in lowered or "ciaz" in lowered or "zwolnien" in lowered or "l4" in lowered) and date_kind not in ("porod", "przewidywana"):
+        return "ciaza_l4"
+    return "porod"
+
+
 def _variant(text: str) -> tuple[str, str]:
     if re.search(r"81[,.]5", text):
         return "81.5", "81,5% przez cały okres"
@@ -316,8 +329,9 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
     role = _role(full_text)
     lowered = full_text.lower()
     has_z3a = "z-3a" in lowered or "z3a" in lowered
-    has_z3 = bool(re.search(r"z-3(?!a)|z3(?!a)", lowered))
-    missing_z3a = employment == "zlecenie" and not has_z3a
+    benefit_type = _benefit_type(full_text, date_kind)
+    payer_is_zus = employment in ("jdg", "ustanie") or insured is None or insured <= 20
+    missing_z3a = employment == "zlecenie" and not has_z3a and payer_is_zus
     found = [item is not None and item != "" for item in (name, event_date, base, employment, insured)]
     confidence = min(90, 15 + 15 * sum(found))
 
@@ -328,7 +342,7 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
     subtitle = "Uzupełnij brakujące pola w kalkulatorze. Brakujące wartości nie zostały niczym zastąpione."
     if base is not None and event_date and variant and employment:
         plan = calculate_benefit_plan({
-            "benefit_type": "porod",
+            "benefit_type": benefit_type,
             "employment_type": employment,
             "children_count": 1,
             "due_date": event_date,
@@ -337,7 +351,7 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
             "parent_name": name or "",
             "parent_role": role or "matka",
             "liczba_ubezpieczonych": insured if insured is not None else (1 if employment == "jdg" else 21),
-            "include_paternity": True,
+            "include_paternity": benefit_type not in ("piecza", "ciaza_l4"),
         })
         monthly = _pln(plan["monthly_gross"]) if plan["entitled"] else "0,00 zł"
         rate_note = f"{variant_label}. Podstawa zasiłku po 13,71%: {_pln(plan['benefit_base'])}."
@@ -375,6 +389,7 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
             "base_amount_value": base,
             "due_or_birth_date": event_date,
             "date_kind": date_kind,
+            "benefit_type": benefit_type,
             "requested_variant": variant_label,
         },
         "completeness": {
@@ -436,7 +451,7 @@ def _gemini_from_scan(doc: fitz.Document, filename: str, api_key: str) -> Option
     for index, page in enumerate(doc):
         if index > 1:
             break
-        image = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4)).tobytes("png")
+        image = page.get_pixmap(dpi=180).tobytes("png")
         parts.append(types.Part.from_bytes(data=image, mime_type="image/png"))
     parts.append("Odczytaj z obrazu wniosku ZUS tylko pola, które widać. Zwróć JSON extracted jak przy tekście. Nie wymyślaj kwot. Plik: " + filename)
     response = client.models.generate_content(model="gemini-2.5-flash", contents=parts)

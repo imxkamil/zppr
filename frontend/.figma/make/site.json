@@ -1,5 +1,9 @@
 {
+  "title": "ZUS - Świadczenia rodzicielskie",
   "description": "Helps Polish parents understand ZUS benefits, estimate payments and leave, check eligibility, and manage application documents, deadlines, and support.",
+  "icons": {
+    "icon": "/favicon.svg"
+  },
   "robots": {
     "index": false
   },

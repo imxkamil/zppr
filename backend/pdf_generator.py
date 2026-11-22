@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
@@ -420,26 +420,93 @@ def checklist_context(scenario: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def render_checklist_pdf(scenario: Dict[str, Any]) -> Tuple[bytes, str]:
+def _checklist_from_plan(scenario: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    base = checklist_context(scenario)
+    employment = str(overlay.get("employment_type") or "")
+    if not employment:
+        scenario_id = str(scenario.get("id") or "")
+        employment = "jdg" if "jdg" in scenario_id else "zlecenie" if "zlecenie" in scenario_id else "uop"
+    forms = list(overlay.get("required_forms") or [])
+    is_zus = bool(overlay["payer_is_zus"]) if overlay.get("payer_is_zus") is not None else bool((scenario.get("benefit_payer") or {}).get("is_zus"))
+    benefit = str(overlay.get("benefit_type") or "porod")
+    if employment == "jdg":
+        certificate = ("Zaświadczenie Z-3", "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zniesiony 24.10.2026 r.", "Nie dotyczy — wniosek ZAM do ZUS")
+        route_note = "Wniosek ZAM składasz bezpośrednio do ZUS, bez Z-3."
+    elif employment == "ustanie":
+        certificate = ("Dokument potwierdzający ustanie zatrudnienia", "Do wniosku ZAM dołączasz dokument potwierdzający ustanie zatrudnienia.", "Wymagane do ZUS")
+        route_note = "Wypłata przez ZUS po ustaniu zatrudnienia."
+    elif employment == "zlecenie" and any("Z-3a" in item for item in forms):
+        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek.", "Wymagane do ZUS")
+        route_note = "ZUS wypłaci zasiłek po otrzymaniu Z-3a od zleceniodawcy."
+    elif employment == "zlecenie":
+        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.", "Nie dotyczy — wypłaca zleceniodawca")
+        route_note = "Zasiłek wypłaca zleceniodawca. Z-3a nie jest wymagane."
+    elif any(item == "Z-3" or item.startswith("Z-3") and "Z-3a" not in item for item in forms):
+        certificate = ("Zaświadczenie płatnika Z-3", "Pracodawca przekazuje do ZUS zaświadczenie Z-3.", "Wymagane do ZUS")
+        route_note = "ZUS wypłaca zasiłek po zaświadczeniu Z-3."
+    else:
+        certificate = ("Zaświadczenie płatnika Z-3", "Płatnik zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.", "Nie dotyczy — wypłaca pracodawca")
+        route_note = "Przy więcej niż 20 ubezpieczonych zasiłek wypłaca pracodawca. Z-3 nie jest wymagane."
+    if benefit in ("adopcja", "adoption"):
+        event_step = ("Orzeczenie sądu o przysposobieniu / zaświadczenie o wszczęciu postępowania", "Dokument potwierdzający przysposobienie albo wszczęcie postępowania.", "Do potwierdzenia")
+    elif benefit in ("piecza", "foster"):
+        event_step = ("Postanowienie sądu lub umowa o powierzeniu pieczy zastępczej", "Dokument potwierdzający powierzenie dziecka.", "Do potwierdzenia")
+    elif benefit in ("ciaza_l4", "pregnancy"):
+        event_step = ("Zaświadczenie e-ZLA", "Zwolnienie lekarskie w ciąży, kod B.", "Do potwierdzenia")
+    else:
+        event_step = ("Odpis skrócony aktu urodzenia", "ZUS może pozyskać dane elektronicznie z rejestru.", "Do potwierdzenia")
+    leave_step = (
+        ("Wniosek o urlop do pracodawcy", "Przy tej formie zatrudnienia nie składa się wniosku o urlop z Kodeksu pracy.", "Nie dotyczy (brak urlopu z KP — przysługuje zasiłek z ZUS)")
+        if employment in ("jdg", "zlecenie", "ustanie")
+        else ("Wniosek o urlop do pracodawcy", "Oddzielny od wniosku o wypłatę zasiłku.", "Wymaga podpisu")
+    )
+    due = str(overlay.get("due_date") or base["due"])
+    try:
+        deadline = (date.fromisoformat(due) + timedelta(days=int(base["deadline_days"]))).isoformat()
+    except ValueError:
+        deadline = base["deadline"]
+    payer_title = str(overlay.get("payer_title") or base["payer_title"])
+    return {
+        **base,
+        "is_zus": is_zus,
+        "payer_title": payer_title,
+        "route": "Ty → ZUS → wypłata" if is_zus else "Ty → płatnik → wypłata",
+        "route_note": route_note,
+        "due": due,
+        "deadline": deadline,
+        "steps": [
+            ("Wniosek ZAM", "Zasiłek macierzyński, rodzicielski lub ojcowski.", "Gotowy do wypełnienia"),
+            certificate,
+            leave_step,
+            event_step,
+        ],
+    }
+
+
+def render_checklist_pdf(scenario: Dict[str, Any], overlay: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
     styles = _styles()
-    context = checklist_context(scenario)
+    context = _checklist_from_plan(scenario, overlay) if overlay else checklist_context(scenario)
     story: List[Any] = _heading(
         styles,
         "WNIOSKI, DOKUMENTY I TERMINY",
         "Checklista dopasowana do scenariusza",
         scenario.get("label") or scenario.get("user_name") or "Scenariusz testowy",
     )
+    person = str(overlay.get("parent_name") or "Do uzupełnienia") if overlay and "parent_name" in overlay else str(scenario.get("user_name") or "—")
+    benefit = str((overlay or {}).get("benefit_type") or "porod")
+    when = "przyjęcia dziecka" if benefit in ("adopcja", "piecza", "adoption", "foster") else "porodu"
+    rate_label = "100% + 70%" if (overlay or {}).get("variant") == "100_70" else context["single_rate"]
     story.append(_kpi_table(styles, [
-        ("Ubezpieczona", str(scenario.get("user_name") or "—")),
+        ("Ubezpieczona", person),
         ("Płatnik zasiłku", context["payer_title"]),
-        (f"Termin {context['single_rate']}", _long_date(context["deadline"])),
+        (f"Termin {rate_label}", _long_date(context["deadline"])),
     ]))
     story.append(Spacer(1, 8))
     story.append(Paragraph("Ścieżka obiegu", styles["h2"]))
     story.append(Paragraph(_esc(context["route"]), styles["body"]))
     story.append(Paragraph(_esc(context["route_note"]), styles["small"]))
     story.append(Paragraph(
-        _esc(f"Wniosek o wariant {context['single_rate']} złóż do {_long_date(context['deadline'])} ({context['deadline_days']} dni od porodu {_long_date(context['due'])})."),
+        _esc(f"Wniosek o wariant {rate_label} złóż do {_long_date(context['deadline'])} ({context['deadline_days']} dni od {when} {_long_date(context['due'])})."),
         styles["body"],
     ))
     story.append(Paragraph("Cztery kroki", styles["h2"]))
@@ -455,10 +522,11 @@ def render_checklist_pdf(scenario: Dict[str, Any]) -> Tuple[bytes, str]:
     ))
     story.append(Spacer(1, 8))
     story.append(_note(styles, DISCLAIMER))
+    employment = str((overlay or {}).get("employment_type") or "")
     scenario_id = str(scenario.get("id") or "")
-    if "jdg" in scenario_id:
+    if employment == "jdg" or (not employment and "jdg" in scenario_id):
         filename = "checklista-jdg.pdf"
-    elif "zlecenie" in scenario_id:
+    elif employment == "zlecenie" or (not employment and "zlecenie" in scenario_id):
         filename = "checklista-zlecenie.pdf"
     else:
         filename = "checklista-uop.pdf"

@@ -10,6 +10,7 @@ os.environ.pop("GEMINI_API_KEY", None)
 import fitz
 
 from engine import calculate_benefit_plan, supplementary_weeks
+from pdf_generator import render_calculator_pdf, render_verification_pdf
 from pdf_verifier import analyze_uploaded_pdf
 
 
@@ -149,6 +150,50 @@ def test_pdf():
     dumped = str(empty)
     check("PDF B komunikat o warstwie", "warstw" in (empty.get("error") or "").lower(), str(empty.get("error")))
     check("PDF B bez fałszywej podstawy", empty["extracted"]["base_amount_value"] is None and "8200" not in dumped and "6683" not in dumped and "6 683" not in dumped)
+    check("PDF B skan nie woła Gemini bez klucza", empty.get("model") != "gemini-2.5-flash")
+
+
+def test_pdf_pipeline():
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Wniosek ZAM\nImie i nazwisko: Ewa Malinowska\nMatka\nUmowa o prace\nLiczba ubezpieczonych: 25\nPodstawa wymiaru skladek: 8 200,00 zl\nData porodu: 18.09.2026\nWariant 81,5%", fontsize=11)
+    data = doc.tobytes()
+    doc.close()
+    parsed = analyze_uploaded_pdf(data, "uop-8200.pdf")
+    extracted = parsed["extracted"]
+    benefit = calculate_benefit_plan({
+        "benefit_type": "porod",
+        "employment_type": extracted["employment_type"],
+        "children_count": 1,
+        "due_date": extracted["due_or_birth_date"],
+        "variant": "81.5",
+        "base_salary_gross": extracted["base_amount_value"],
+        "parent_name": extracted["applicant_name"],
+        "parent_role": extracted["role"] or "matka",
+        "liczba_ubezpieczonych": extracted["insured_count"],
+        "include_paternity": True,
+        "wymiar_etatu": 1,
+    })
+    check("PDF E2E podstawa 8200", extracted["base_amount_value"] == 8200 and extracted["employment_type"] == "uop", str(extracted))
+    check("PDF E2E 5766,76 / 5074,75", benefit["monthly_gross"] == 5766.76 and benefit["monthly_net"] == 5074.75, f"{benefit['monthly_gross']} / {benefit['monthly_net']}")
+    verification, verification_name = render_verification_pdf(parsed)
+    calculator, calculator_name = render_calculator_pdf({
+        "variant": "81.5",
+        "children_count": 1,
+        "base_salary_gross": extracted["base_amount_value"],
+        "etat_pracy": 0,
+        "tygodnie_laczenia": 0,
+        "za_zyciem": False,
+    }, benefit)
+    check("PDF E2E pliki", verification.startswith(b"%PDF") and calculator.startswith(b"%PDF") and verification_name.endswith(".pdf") and calculator_name.endswith(".pdf"))
+    report = fitz.open(stream=verification, filetype="pdf")
+    plan_pdf = fitz.open(stream=calculator, filetype="pdf")
+    report_text = "".join(item.get_text("text") for item in report)
+    plan_text = "".join(item.get_text("text") for item in plan_pdf)
+    report.close()
+    plan_pdf.close()
+    check("PDF E2E raport ma 5 766,76", "5 766,76" in report_text, report_text[:400])
+    check("PDF E2E plan ma brutto i netto", "5 766,76" in plan_text and "5 074,75" in plan_text, plan_text[:500])
 
 
 def test_source_fallbacks():
@@ -209,6 +254,7 @@ def test_live_api():
 if __name__ == "__main__":
     test_engine()
     test_pdf()
+    test_pdf_pipeline()
     test_source_fallbacks()
     test_live_api()
     print(f"\n{len(FAILURES)} FAIL")

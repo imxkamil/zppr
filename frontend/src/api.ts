@@ -34,7 +34,7 @@ export type BenefitPlan = {
   payer?: { title: string; is_zus: boolean; required_forms: string[]; note: string; insured_count?: number };
   parents?: { mother: string; father: string; role: string };
   notes?: string[];
-  pregnancy?: { sick_days_paid: number; employer_days: number; zus_sick_days: number; rehab_days: number; limit_days: number };
+  pregnancy?: { sick_days_paid: number; employer_days: number; zus_sick_days: number; rehab_days: number; limit_days: number; rehab_in_pregnancy?: boolean };
   breakdown: {
     maternity_weeks: number;
     pre_birth_weeks?: number;
@@ -250,7 +250,7 @@ export function supplementaryWeeks(week: number | null, grams: number | null, da
 function monthlyAmount(basis: number, rate: number) {
   const gross = money(basis * rate);
   const net = money(gross * 0.88);
-  if (gross > 0 && net < 1000) return { gross: 1000, net: 1000, uplift: true };
+  if (gross > 0 && net > 0 && net < 1000) return { gross: 1000, net: 1000, uplift: true };
   return { gross, net, uplift: false };
 }
 
@@ -261,8 +261,35 @@ export function parsePlnAmount(text: string | null | undefined) {
   return money(Number(match[1]) + (match[2] ? Number(match[2].padEnd(2, "0")) / 100 : 0));
 }
 
+function localPayer(employment: string, insured: number): NonNullable<BenefitPlan["payer"]> {
+  const count = Math.max(0, Math.round(insured));
+  const zus = employment === "jdg" || employment === "ustanie" || count <= 20;
+  if (employment === "jdg") {
+    return { title: "ZUS", is_zus: true, required_forms: ["ZAM do ZUS"], note: "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zlikwidowany 24.10.2026 r.", insured_count: count };
+  }
+  if (employment === "ustanie") {
+    return { title: "ZUS", is_zus: true, required_forms: ["ZAM", "Dokument potwierdzający ustanie zatrudnienia"], note: "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS.", insured_count: count };
+  }
+  if (employment === "zlecenie") {
+    return {
+      title: zus ? "ZUS" : "Zleceniodawca",
+      is_zus: zus,
+      required_forms: zus ? ["Z-3a"] : [],
+      note: zus ? "Zleceniodawca zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po Z-3a." : "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.",
+      insured_count: count,
+    };
+  }
+  return {
+    title: zus ? "ZUS" : "Pracodawca",
+    is_zus: zus,
+    required_forms: zus ? ["Z-3"] : [],
+    note: zus ? "Płatnik zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po zaświadczeniu Z-3." : "Płatnik zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.",
+    insured_count: count,
+  };
+}
+
 export function calculateLocally(payload: CalculatorInput, law: LegislationParams = FALLBACK_LEGISLATION): BenefitPlan {
-  const aliases: Record<string, string> = { porod: "porod", birth: "porod", ciaza: "ciaza_l4", ciaza_l4: "ciaza_l4", pregnancy: "ciaza_l4", adopcja: "adopcja", adoption: "adopcja", piecza: "piecza", piecza_zastepcza: "piecza" };
+  const aliases: Record<string, string> = { porod: "porod", birth: "porod", ciaza: "ciaza_l4", ciaza_l4: "ciaza_l4", pregnancy: "ciaza_l4", adopcja: "adopcja", adoption: "adopcja", piecza: "piecza", piecza_zastepcza: "piecza", foster: "piecza" };
   const event = aliases[payload.benefit_type] || "porod";
   const employment = ["uop", "zlecenie", "jdg", "ustanie"].includes(payload.employment_type) ? payload.employment_type : "uop";
   const children = Math.min(5, Math.max(1, Math.round(finite(Number(payload.children_count), 1))));
@@ -318,6 +345,8 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
       if (ageYears >= limit) {
         maternity = 0;
         parental = 0;
+        const label = event === "adopcja" ? "14 lat" : payload.odroczenie_obowiazku_szkolnego ? "10 lat (odroczenie obowiązku szkolnego)" : "7 lat";
+        notes.push(`Dziecko ukończyło już ${label}. Urlop na warunkach macierzyńskiego i rodzicielski nie przysługują.`);
       } else {
         const left = ((limit - ageYears) * 365) / 7;
         const minimum = zaZyciem ? 71 : 47;
@@ -365,24 +394,70 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
   const extensionDaysTotal = Math.floor(rawExtra * 7);
   const ageMonths = optionalNumber(payload.wiek_dziecka_miesiace);
   let paternity = payload.include_paternity === false ? 0 : Math.max(0, finite(Number(law.paternity_weeks), 2));
-  if (event === "piecza" || event === "ciaza_l4" || maternity + parental === 0) paternity = 0;
-  if (event === "porod" && ageMonths != null && ageMonths >= 12) paternity = 0;
-  if (event === "adopcja" && ageYears != null && ageYears >= 14) paternity = 0;
+  if (paternity && event === "piecza") {
+    paternity = 0;
+    notes.push("Brak prawa do urlopu ojcowskiego dla rodziny zastępczej. Ten urlop dotyczy urodzenia albo przysposobienia dziecka.");
+  } else if (paternity && role === "opiekun") {
+    paternity = 0;
+    notes.push("Opiekun nie ma prawa do urlopu ojcowskiego. Ten urlop przysługuje ojcu dziecka.");
+  } else if (paternity && event === "porod" && ageMonths != null && ageMonths >= 12) {
+    paternity = 0;
+    notes.push("Urlop ojcowski wygasa z ukończeniem przez dziecko 12 miesięcy.");
+  } else if (paternity && event === "adopcja" && ageYears != null && ageYears >= 14) {
+    paternity = 0;
+    notes.push("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.");
+  } else if (paternity && maternity + parental === 0) {
+    paternity = 0;
+    notes.push("Urlop ojcowski nie przysługuje, bo urlop na warunkach macierzyńskiego i rodzicielski już nie przysługują.");
+  }
+  if (event === "ciaza_l4") {
+    notes.push("Urlop ojcowski nie wchodzi w okres ciąży i zwolnienia lekarskiego.");
+    paternity = 0;
+  }
   const insured = Math.round(finite(Number(payload.liczba_ubezpieczonych), 21));
-  const zus = employment === "jdg" || employment === "ustanie" || insured <= 20;
-  const payerTitle = employment === "zlecenie" && !zus ? "Zleceniodawca" : zus ? "ZUS" : "Pracodawca";
-  const forms = employment === "jdg" ? ["ZAM do ZUS"] : zus && employment === "zlecenie" ? ["Z-3a"] : zus && employment === "uop" ? ["Z-3"] : [];
-  const main = monthlyAmount(payBasis, event === "ciaza_l4" ? rateFull : rateMaternity);
-  const sickDays = Math.min(270, Math.max(0, Math.round(finite(Number(payload.dni_niezdolnosci), 0))));
+  const payer = localPayer(employment, insured);
+  const ageBlocked = (event === "adopcja" || event === "piecza") && preWeeks === 0 && postWeeks === 0 && parental === 0;
+  const main = ageBlocked ? { gross: 0, net: 0, uplift: false } : monthlyAmount(payBasis, event === "ciaza_l4" ? rateFull : rateMaternity);
+  let upliftApplied = main.uplift;
+  const rawSickDays = Math.max(0, Math.round(finite(Number(payload.dni_niezdolnosci), 0)));
+  const sickDays = Math.min(270, rawSickDays);
   const age = optionalNumber(payload.wiek_ubezpieczonego);
+  if (event === "ciaza_l4" && employment === "uop" && age == null) {
+    notes.push("Nie podano wieku. Dla umowy o pracę przyjęto 33 dni wynagrodzenia chorobowego w roku (próg 14 dni dotyczy osób, które ukończyły 50 lat).");
+  }
   const employerDays = event === "ciaza_l4" && employment === "uop" ? Math.min(sickDays, age != null && age >= 50 ? 14 : 33) : 0;
-  const rehabDays = event === "ciaza_l4" && sickDays >= 270 ? Math.min(365, Math.max(0, Math.round(finite(Number(payload.miesiace_rehabilitacji), 0)) * 30)) : 0;
+  const rehabMonths = Math.max(0, Math.round(finite(Number(payload.miesiace_rehabilitacji), 0)));
+  const rehabDays = event === "ciaza_l4" && sickDays >= 270
+    ? Math.min(365, rehabMonths > 0 ? rehabMonths * 30 : Math.max(0, rawSickDays - 270))
+    : 0;
   const totalDays = event === "ciaza_l4"
     ? sickDays + rehabDays
     : (preWeeks + postWeeks + extraWeeks + parental) * 7 + extensionDaysTotal + paternity * 7;
   const schedule: BenefitPlan["schedule"] = [];
-  if (entitled && dueDate && payBasis > 0 && event !== "ciaza_l4") {
+  if (entitled && dueDate && payBasis > 0 && event === "ciaza_l4") {
+    const [year, month, day] = dueDate.split("-").map(Number);
+    let cursor = new Date(year, month - 1, day);
+    const advance = (days: number, kind: string, rate: number) => {
+      if (days <= 0) return;
+      if (monthlyAmount(payBasis, rate).uplift) upliftApplied = true;
+      pushChunk(schedule, cursor, days, mother, kind, rate, payBasis);
+      cursor = new Date(cursor);
+      cursor.setDate(cursor.getDate() + days);
+    };
+    advance(employerDays, "Wynagrodzenie chorobowe (kod B)", rateFull);
+    advance(sickDays - employerDays, "Zasiłek chorobowy 100%", rateFull);
+    if (rehabDays > 0 && payload.rehabilitacja_w_ciazy !== false) {
+      advance(rehabDays, "Świadczenie rehabilitacyjne w ciąży", rateFull);
+    } else if (rehabDays > 0) {
+      const first = Math.min(90, rehabDays);
+      advance(first, "Świadczenie rehabilitacyjne 90%", 0.9);
+      advance(rehabDays - first, "Świadczenie rehabilitacyjne 75%", 0.75);
+    }
+  } else if (entitled && dueDate && payBasis > 0 && event !== "ciaza_l4") {
     const care = payload.matka_nie_moze_opiekowac ? father : mother;
+    if (payload.matka_nie_moze_opiekowac) notes.push("Urlop przed porodem zostaje przy matce. Zasiłek po porodzie i uzupełniający urlop przejmuje ojciec, bo matka nie może sprawować opieki.");
+    else if (event !== "ciaza_l4") notes.push("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki.");
+    if (event !== "ciaza_l4") notes.push("9 tygodni rodzicielskiego drugiego rodzica jest liczone po 70% i nie wchodzi w uśrednienie 81,5%.");
     const chunks: { days: number; parent: string; kind: string; rate: number }[] = [];
     if (postWeeks) chunks.push({ days: postWeeks * 7, parent: care, kind: "Zasiłek macierzyński", rate: rateMaternity });
     if (extraWeeks) chunks.push({ days: extraWeeks * 7, parent: care, kind: "Uzupełniający urlop macierzyński", rate: rateFull });
@@ -407,7 +482,7 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     if (preWeeks) {
       const preStart = new Date(cursor);
       preStart.setDate(preStart.getDate() - preWeeks * 7);
-      pushChunk(schedule, preStart, preWeeks * 7, care, "Urlop przed porodem", rateFull, payBasis);
+      pushChunk(schedule, preStart, preWeeks * 7, mother, "Urlop przed porodem", rateFull, payBasis);
     }
     chunks.forEach((chunk) => {
       pushChunk(schedule, cursor, chunk.days, chunk.parent, chunk.kind, chunk.rate, payBasis);
@@ -419,7 +494,7 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
   return {
     monthly_gross: main.gross,
     monthly_net: main.net,
-    uplift_applied: main.uplift,
+    uplift_applied: upliftApplied,
     benefit_base: basis,
     declared_gross: declared,
     entitled,
@@ -428,10 +503,10 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     total_weeks: Math.floor(totalDays / 7),
     total_extra_days: totalDays % 7,
     total_months_approx: Math.round(Math.floor(totalDays / 7) / 4.33),
-    payer: { title: payerTitle, is_zus: zus, required_forms: forms, note: zus ? "Zasiłek wypłaca ZUS." : "Zasiłek wypłaca płatnik składek.", insured_count: insured },
+    payer,
     parents: { mother, father, role },
     notes,
-    pregnancy: event === "ciaza_l4" ? { sick_days_paid: sickDays, employer_days: employerDays, zus_sick_days: sickDays - employerDays, rehab_days: rehabDays, limit_days: 270 } : undefined,
+    pregnancy: event === "ciaza_l4" ? { sick_days_paid: sickDays, employer_days: employerDays, zus_sick_days: sickDays - employerDays, rehab_days: rehabDays, limit_days: 270, rehab_in_pregnancy: payload.rehabilitacja_w_ciazy !== false } : undefined,
     breakdown: {
       maternity_weeks: postWeeks,
       pre_birth_weeks: preWeeks,
@@ -568,9 +643,9 @@ export const PDF_CHIP_LABELS: Record<string, string> = {
 };
 
 export const FALLBACK_ORGANIZATIONS: Organization[] = [
-  { id: 1, category: "strata", badge: "STRATA I ŻAŁOBA", name: "Fundacja Ernesta", description: "Bezpłatne wsparcie psychologiczne i prawne po stracie ciąży i dziecka.", phone: "22 123 00 80", website: "https://fundacjaernesta.pl", verified: 1 },
-  { id: 2, category: "wczesniactwo", badge: "WCZEŚNIACTWO", name: "Fundacja Wcześniak", description: "Informacja, grupy wsparcia i pomoc rodzinom wcześniaków w szpitalach.", phone: "22 231 35 50", website: "https://wczesniak.pl", verified: 1 },
-  { id: 3, category: "za_zyciem", badge: "WSPARCIE RODZINY", name: "Fundacja Dajemy Dzieciom Siłę", description: "Pomoc psychologiczna i prawna dla dzieci oraz opiekunów.", phone: "116 111", website: "https://fdds.pl", verified: 1 },
+  { id: 1, category: "strata", badge: "STRATA I ŻAŁOBA", name: "Fundacja Ernesta", description: "Bezpłatne wsparcie psychologiczne i prawne po stracie ciąży i dziecka.", phone: "22 350 00 50 (wew. 1)", website: "https://fundacjaernesta.pl", verified: 1 },
+  { id: 2, category: "wczesniactwo", badge: "WCZEŚNIACTWO", name: "Fundacja Wcześniak", description: "Informacja, grupy wsparcia i pomoc rodzinom wcześniaków w szpitalach.", phone: "+48 22 121 80 55", website: "https://wczesniak.pl", verified: 1 },
+  { id: 3, category: "za_zyciem", badge: "WSPARCIE RODZINY", name: "Fundacja Dajemy Dzieciom Siłę", description: "Pomoc psychologiczna i prawna dla dzieci oraz opiekunów.", phone: "116 111 (dzieci i młodzież) / 800 100 100 (rodzice i opiekunowie)", website: "https://fdds.pl", verified: 1 },
 ];
 
 export function offlinePdfResult(filename: string): PdfCase {

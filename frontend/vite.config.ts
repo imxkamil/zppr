@@ -36,6 +36,8 @@ react(),
       host: 'localhost',
       port: parseInt(process.env.PORT || '5173'),
       strictPort: false,
+      // Brak proxy /api. Klient woła VITE_API_URL + /api/... i prefiks zostaje.
+      // Nginx w Dockerze też go nie odcina. FastAPI ma trasy pod /api.
       watch: {
         ignored: ['**/.figma/**'],
       },
@@ -86,11 +88,11 @@ function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
     return html.replace(`<!-- ${slotName} -->`, content)
   }
 
-  const title = config.title ?? "Figma Make App"
+  const title = config.title ?? "ZUS - Świadczenia rodzicielskie"
   const description = config.description ?? ''
   // Imported HTML keeps its own favicon. New Makes use PNG because Google Search does not
   // support SVG favicons, even though browsers do.
-  const favicon = config.icons?.icon ?? '/favicon.png'
+  const favicon = config.icons?.icon ?? '/favicon.svg'
   const socialImage = config.openGraph?.image ?? ''
   const language = sanitizeHtmlValue(config.language) || 'en'
   const googleAnalyticsId = sanitizeHtmlValue(config.analytics?.googleAnalyticsId)

@@ -6,19 +6,19 @@ Nazwa produktu w interfejsie: **eZUS Rodzic+**, podtytuł **Asystent Świadczeń
 
 ## 1. Po co jest aplikacja
 
-Użytkownik przechodzi przez symulowane wejście do PUE/eZUS (login.gov.pl / mObywatel), ogląda status ubezpieczenia chorobowego, liczy plan zasiłku, sprawdza wniosek PDF, składa symulowane dokumenty i widzi organizacje pomocowe.
+Użytkownik przechodzi przez symulowane wejście do PUE/eZUS (login.gov.pl / mObywatel), ogląda status ubezpieczenia chorobowego, liczy plan zasiłku, składa symulowane dokumenty, sprawdza wniosek PDF i widzi organizacje pomocowe.
 
 Pięć zakładek po wejściu w aplikację:
 
 | Id widoku | Etykieta | Po co |
 | --- | --- | --- |
 | `status` | Mój Status i Symulacja eZUS | Ubezpieczenie, płatnik, e-ZLA, radar ryzyk |
-| `calculator` | Zintegrowany Kalkulator Zasiłków | Plan, oś czasu, harmonogram, PDF planu |
-| `pdf` | Weryfikator Spraw PDF (Test ZUS) | Cztery sprawy testowe albo upload PDF |
-| `documents` | Wnioski, Dokumenty i Terminy | ZAM, wniosek o urlop, odpis aktu, checklista |
+| `calculator` | Zintegrowany Kalkulator Zasiłków | Plan, wykres kolejności świadczeń, harmonogram, PDF planu |
+| `documents` | Wnioski, Dokumenty i Terminy | ZAM, a przy nie-pracowniku także ZUR i ZAO, wniosek o urlop, odpis aktu, checklista |
+| `pdf` | Weryfikator Spraw PDF | Cztery sprawy testowe albo upload PDF |
 | `support` | Strefa Wsparcia i Sytuacje Trudne | Organizacje, panel stawek, panel organizacji |
 
-Nie ma routera (`react-router`). Zakładka to stan React `view` w `frontend/src/App.tsx`. Adres w pasku przeglądarki zostaje `/`.
+Nie ma routera (`react-router`). Zakładka to stan React `view` w `frontend/src/App.tsx`. Adres w pasku przeglądarki zostaje `/`. Górna nawigacja nie ma numerów. Numery `02`, `03`, `02` i `05` są tylko na dolnych paskach „NASTĘPNY KROK” i wskazują cel, nie miejsce na liście: status prowadzi do kalkulatora, kalkulator do dokumentów, weryfikator z powrotem do kalkulatora, dokumenty do strefy wsparcia.
 
 ## 2. Mapa repozytorium
 
@@ -32,7 +32,7 @@ zppr/
 │   ├── main.py                FastAPI, CORS, modele wejścia, endpointy
 │   ├── engine.py              silnik świadczeń 2026 i trzy scenariusze
 │   ├── database.py            SQLite: organizacje i parametry ustawowe
-│   ├── pdf_verifier.py        odczyt PDF (PyMuPDF + opcjonalny Gemini) i 4 sprawy
+│   ├── pdf_verifier.py        odczyt PDF (PyMuPDF, RapidOCR, opcjonalny NVIDIA NIM) i 4 sprawy
 │   ├── pdf_generator.py       PDF wychodzące (ReportLab)
 │   ├── requirements.txt       zablokowane wersje Pythona
 │   ├── Dockerfile             python:3.12-slim + czcionki
@@ -80,14 +80,16 @@ Przeglądarka nie ma osobnego serwera API po swojej stronie. `fetch` idzie wpros
 
 | Element | Wersja | Skąd | Po co |
 | --- | --- | --- | --- |
-| Python lokalnie | 3.13 (venv w `backend/.venv`) | system | Uruchomienie uvicorn poza Dockerem. |
+| Python lokalnie | 3.13 (venv w `backend/.venv`) | system | Uruchomienie uvicorn poza Dockerem. `rapidocr-onnxruntime==1.4.4` deklaruje Pythona poniżej 3.13, więc w tym venv wszedł z pominięciem tej deklaracji. Na obrazie 3.12 pin instaluje się wprost. |
 | Python w Dockerze | `python:3.12-slim` | Docker Hub | Obraz produkcyjny. 3.12, nie 3.13, bo obraz jest lżejszy i ma stabilne koła pip. |
 | FastAPI | `0.115.0` | pip | HTTP, walidacja Pydantic, `/docs` i `/openapi.json`. |
 | uvicorn `[standard]` | `0.30.6` | pip | Serwer ASGI. `[standard]` dokłada `watchfiles` i `httptools`. |
 | Pydantic | `2.9.2` | pip | Modele `CalculatorInput`, `LegislationInput`, `OrgCreate`. |
 | python-multipart | `0.0.12` | pip | Pole `file` w `POST /api/pdf/verify`. Bez tego FastAPI nie przyjmie uploadu. |
 | PyMuPDF (`fitz`) | `1.26.7` | pip | Tekst z PDF. Wersja 1.24.10 nie ma koła na Pythona 3.13. Import zostaje `import fitz`. |
-| google-genai | `1.21.1` | pip | Klient Gemini. Importowany dopiero gdy jest `GEMINI_API_KEY`. Wersja 0.3.0 nie jest już publikowana. |
+| google-genai | `1.21.1` | pip | Zostaje w `requirements.txt`. Bieżący odczyt PDF go nie woła. |
+| rapidocr-onnxruntime | `1.4.4` | pip | Lokalny OCR skanu, leniwie, najwyżej dwie pierwsze strony. |
+| httpx | `0.28.1` | pip | Opcjonalne wywołanie NVIDIA NIM, gdy ustawiono `NVIDIA_API_KEY`. |
 | ReportLab | `4.2.2` | pip | Trzy PDF-y wychodzące: plan, raport weryfikacji, checklista. |
 | SQLite | biblioteka standardowa | Python | `sqlite3`. Nie ma SQLAlchemy ani Postgresa. |
 | decimal | biblioteka standardowa | Python | Pieniądze w silniku: `Decimal` + `ROUND_HALF_UP` do grosza. `Decimal * float` rzuca `TypeError`, dlatego mnożniki są `Decimal`. |
@@ -98,7 +100,7 @@ Przeglądarka nie ma osobnego serwera API po swojej stronie. `fetch` idzie wpros
 | --- | --- | --- |
 | Docker Compose | plik v2 bez pola `version` | Jedna komenda stawia API i frontend. |
 | nginx | `nginx:alpine` | Serwuje zbudowany `dist`. Nie proxy’uje `/api`. |
-| czcionki w obrazie API | `fonts-dejavu-core`, `fonts-liberation` | Polskie znaki w PDF, gdy nie ma Arial. |
+| czcionki i biblioteki w obrazie API | `fonts-dejavu-core`, `fonts-liberation`, `libglib2.0-0`, `libgl1`, `libgomp1`, `libsm6`, `libxext6`, `libxrender1`, `libxcb1` | Polskie znaki w PDF oraz start RapidOCR na `python:3.12-slim`. Bez bibliotek OpenCV skan pada przy `import cv2`, choć samo API wstaje. |
 | GitHub | `https://github.com/imxkamil/zppr` | Zdalne `origin`, gałąź `main`. |
 
 ### 3.4. Czego świadomie nie ma
@@ -106,8 +108,8 @@ Przeglądarka nie ma osobnego serwera API po swojej stronie. `fetch` idzie wpros
 - Brak bazy użytkowników, sesji i haseł. Logowanie mObywatel jest symulacją i zwraca stałą osobę testową.
 - Brak ORMa, kolejek, Redisa i osobnego frontu na Next.js.
 - Brak biblioteki wykresów. Oś czasu to flexbox w CSS.
-- Brak i18n. Lista PL / EN / UA zmienia tylko stan `language`. Teksty zostają po polsku.
-- Brak klucza Gemini w repozytorium. `.env` jest w `.gitignore`.
+- Brak i18n. W pasku jest napis **PL** z podpowiedzią, że tłumaczeń EN i UA nie ma. Nie ma listy, która zmienia język.
+- Lokalny `.env` jest w `.gitignore` i nie jest śledzony. W `docker-compose.yml` oraz `.env.example` jest dedykowany klucz sandboxowy NVIDIA NIM jako fallback na ocenę jury. Zmienna `NVIDIA_API_KEY` go nadpisuje. Po usunięciu klucza OCR zostaje lokalny.
 
 ## 4. Jak to jest uruchamiane
 
@@ -152,7 +154,7 @@ docker compose up --build
 | `backend` | budowany z `backend/Dockerfile` | 8000 | 8000 |
 | `frontend` | budowany z `frontend/Dockerfile` | 5173 | 80 (nginx) |
 
-`depends_on` czeka tylko na start kontenera backendu, nie na gotowość `/api/health`.
+`depends_on` czeka tylko na start kontenera backendu, nie na gotowość `/api/health`. Fallback `NVIDIA_API_KEY` w Compose to klucz sandboxowy z `.env.example`. Klon bez `.env` ma od razu uzupełnianie pustych pól. Własna zmienna środowiskowa nadpisuje ten klucz, a po jego usunięciu skan dalej czyta RapidOCR offline.
 
 Dockerfile backendu kopiuje cały katalog `backend` (łącznie z testami, jeśli są w kontekście). Uruchamia `uvicorn main:app --host 0.0.0.0 --port 8000`. `0.0.0.0` jest konieczne, żeby port był widoczny poza kontenerem. Lokalnie można zostać przy `127.0.0.1`.
 
@@ -179,7 +181,7 @@ flowchart LR
   API["FastAPI main.py"]
   Engine["calculate_benefit_plan"]
   DB["SQLite ezus_rodzic.db"]
-  PDF["PyMuPDF i opcjonalnie Gemini"]
+  PDF["PyMuPDF, RapidOCR i opcjonalnie NVIDIA NIM"]
   Out["ReportLab"]
 
   Browser -->|"natychmiast"| Local
@@ -239,9 +241,9 @@ Nie wszystko idzie przez zmienne. Te heksy są w `index.css` celowo, przy drobny
 
 Cień popovera AI: `rgb(15 23 42 / 16%)`. Cień belki mobilnej: `rgb(15 23 42 / 10%)`. Tło modala: `rgb(11 37 69 / 60%)`, czyli `--navy` z przezroczystością, plus `backdrop-filter: blur(2px)`.
 
-### 6.3. Oś czasu rodziców
+### 6.3. Wykres kolejności świadczeń
 
-Bloki nie mają osobnych zmiennych. Macierzyński jest `--green`, rodzicielski `#3b9c66`, dziewięć tygodni ojca `--blue`, urlop ojcowski `#6084d7`. Kropka legendy „Do podziału” to `#bfdbfe`. Pusty odcinek wiersza (`.timeline-empty`) to osobna rzecz: tło `#f8fafc` i przerywana ramka `#dbe3eb`. Jak z tygodni silnika powstają szerokości tych pasków, jest w sekcji 12.18.
+Paski leżą absolutnie w `.timeline-track`. Kolory są klasami, nie zmiennymi: `full` `#0f766e` (100%), `maternity` to `--green`, `parental` `#3b9c66`, `father` `--blue` (70%), `reduced` `#b45309` (praca w trakcie urlopu). Kreska porodu `.birth-mark` ma 2 px i kolor `--navy`. Pusty tor ma tło `#f8fafc` i przerywaną ramkę `#dbe3eb`. Legenda pokazuje tylko te tony, które są na wykresie. Skąd bierze się pozycja paska, jest w sekcji 12.18.
 
 ### 6.4. Wersja kontrastowa
 
@@ -298,8 +300,8 @@ Dwa progi, oba w `index.css`:
 - shell zwęża się do `min(100% - 32px, 720px)`
 - pasek instytucji 64 px, znika dopisek instytucji i etykieta „symulacja”
 - pasek użytkownika 68 px. Selecta „Scenariusz testowy” nie ma już na żadnej szerokości. Zostaje imię i pastylka połączenia; tutaj pastylka chowa tekst i zostawia ikonę
-- nawigacja przewija się w poziomie, widać skrót `.nav-short`, znika numer i długa etykieta
-- pasek postępu `.progress-mobile` (3 px, zieleń) pokazuje `(indeks + 1) / 5`
+- nawigacja przewija się w poziomie, widać skrót `.nav-short` (Mój status, Kalkulator, Dokumenty, Weryfikator PDF, Wsparcie), znika długa etykieta. Numerów na zakładkach nie ma na żadnej szerokości
+- pasek postępu `.progress-mobile` (3 px, zieleń) pokazuje `(indeks + 1) / 5`. Dokumenty są trzecią zakładką, więc mają około 60% szerokości. Weryfikator jest czwarty
 - kalkulator, dashboard i weryfikator spadają do jednej kolumny
 - siatki ryzyk i organizacji: 2 kolumny
 - chipy spraw PDF: 2 kolumny
@@ -310,11 +312,13 @@ Dwa progi, oba w `index.css`:
 - pasek 58 px, przyciski górne chowają tekst i zostawiają ikonę (`font-size: 0`)
 - zakładki zdarzenia (poród / ciąża / adopcja / piecza) w jednej kolumnie
 - `.two-fields` i `.triple-fields` w jednej kolumnie
-- oś czasu: paski mają `min-width: 0` i wysokość 46 px (na szerokim ekranie 58 px), karta ma `overflow-x: hidden`, skala zaczyna się od 64 px (na szerokim ekranie od 128 px)
+- wykres: paski mają `min-width: 0`, awatary rodziców chowają się, skala `.timeline-scale` zaczyna się od 64 px (na szerokim ekranie od 128 px)
 - tabela wypłat przestaje być tabelą wizualnie: `thead` jest przycięty dla czytników, każdy `td` jest wierszem `flex` z etykietą z `data-label` (`td::before { content: attr(data-label) }`). Dzięki temu strona nie dostaje poziomego scrolla
 - na dole wjeżdża `.mobile-summary`: `position: fixed`, wysokość 67 px, `z-index: 50`, netto miesiąca i przycisk „Zmień dane” (scroll na górę formularza)
 
 Skip link „Przejdź do treści” wskazuje `#main-content`. Figma w `site.json` ma `addBypassLinks: false` i `robots.index: false` (`noindex`). Własny skip link jest w nagłówku aplikacji, nie w szablonie Figma.
+
+Przyciski **A− / A / A+** ustawiają `fontScale` na 0,875, 1 i 1,125. Aktywny ma klasę `active` i `aria-pressed`. Efekt w `App` zapisuje `document.documentElement.style.fontSize` jako `${fontScale * 100}%`, bo rozmiar na `.app` nie zmienia `rem`. Po odmontowaniu rozmiar wraca do pustego. Domyślnie wciśnięte jest A, czyli 16 px na `html`.
 
 `frontend/.figma/make/site.json` ustawia tytuł karty na dokładnie `ZUS - Świadczenia rodzicielskie` i ikonę `/favicon.svg`. Wtyczka w `vite.config.ts` wstawia ten tytuł w miejsce komentarza `<!-- figma:title -->` w `index.html` i dokłada `<link rel="icon" href="/favicon.svg">`. Gdyby `site.json` nie miał tytułu, ten sam tekst jest zapasem w `vite.config.ts` (`config.title ?? "ZUS - Świadczenia rodzicielskie"`). `favicon.svg` to zielony monogram ZUS wycięty z `logo-zus-official.svg`, bo pełny napis jest nieczytelny w 16 px. Nazwa produktu na ekranie zostaje „eZUS Rodzic+”.
 
@@ -331,11 +335,11 @@ Jeden plik, bez podziału na katalog `components/`. Kolejność logiczna:
 1. Ikony SVG jako mapa `icons` (brak osobnej biblioteki ikon).
 2. `Badge`, `Button`, `SectionHeader`, `PageIntro`.
 3. `AiInfo` / `AiExplainer` — modal „Jak działa AI w tym module?”. Dwa warianty: `risks` i `pdf`.
-4. `StatusView` — krok 1.
-5. `CalculatorView` — krok 2. Formularz (`calcForm`) żyje w `App` i przeżywa zmianę zakładki.
-6. `PdfView` — weryfikator. Po sparsowaniu woła `onParsed`, a `App` trzyma `pdfCase`.
-7. `DocumentsView` i `DocumentWizard` — krok 3. Wizard: `zam`, `leave`, `birth`, `attachment`. Nazwy załączników i status „WYSŁANO” żyją w `App`.
-8. `SupportView` i `AdminPanel` — krok 4 plus edycja stawek i organizacji.
+4. `StatusView`. Brew: „Twój profil”. Sekcja ryzyk ma brew „Ważne informacje”.
+5. `CalculatorView`. Brew: „Kalkulator świadczeń”. Formularz (`calcForm`) żyje w `App` i przeżywa zmianę zakładki.
+6. `DocumentsView` i `DocumentWizard`. Brew: „Dokumenty i terminy”. Wizard: `zam`, `leave`, `birth`, `attachment`. Nazwy załączników i status „WYSŁANO” żyją w `App`. Zapytania do PUE z tej zakładki nie ma: zostaje pastylka w pasku użytkownika.
+7. `PdfView`. Brew: „Weryfikacja dokumentów”. Tytuł zakładki to „Weryfikator Spraw PDF”, bez dopisku „(Test ZUS)”. Po sparsowaniu woła `onParsed`, a `App` trzyma `pdfCase`. W karcie rozstrzygnięcia jest tylko „Pobierz raport”. „Przenieś dane do kalkulatora i policz” jest wyłącznie na dolnym pasku.
+8. `SupportView` i `AdminPanel`. Brew źródłowa to „STREFA WSPARCIA”; CSS i tak zamienia brew na wielkie litery. Panel edytuje stawki i organizacje.
 9. `PortalEntry`, `LoginGov`, `QrCode`, `Authenticating`, `PueInquiry`.
 10. Domyślny `App` spina auth, scenariusz, skalę pisma, kontrast, język i widok.
 
@@ -346,7 +350,7 @@ Stan w `App`:
 | `view` | `status` | która zakładka |
 | `scenarios` | `FALLBACK_SCENARIOS` | podmiana po `GET /api/scenarios` |
 | `scenarioId` | `uop_over_20` | aktywna persona |
-| `fontScale` | `1` | A− / A / A+ |
+| `fontScale` | `1` | A− 0,875 / A 1 / A+ 1,125, zapis na `html` |
 | `contrast` | `false` | klasa `high-contrast` |
 | język | stałe `PL` | napis w pasku, bez listy EN/UA |
 | `authStep` | `portal-entry` | bramka, login, „logowanie”, panel |
@@ -399,19 +403,23 @@ Harmonogram nie bierze imienia z paska. Bierze `plan.parents` z silnika. Puste p
 | Pobyt od / do dnia życia | `hospitalizacja_od_dnia`, `hospitalizacja_do_dnia` | okno 5–28 przy ≥ 37 tyg. |
 | Za życiem | `za_zyciem` | wydłuża rodzicielski |
 | Urlop ojcowski | `include_paternity` | domyślnie włączony |
-| Matka nie może opiekować | `matka_nie_moze_opiekowac` | przy porodzie tekst pod przełącznikiem: przejęcie od 1. dnia (hospitalizacja albo niezdolność do samodzielnej egzystencji) albo rezygnacja po 14 tygodniach. Symulacja i tak przenosi cały blok macierzyński |
+| Matka nie może opiekować | `matka_nie_moze_opiekowac` | bez osobnego akapitu pod przełącznikiem. Włączony przełącznik przenosi na wykresie blok po porodzie do ojca. Urlop przed porodem zostaje przy matce |
 | Wariant | `variant` | `81.5` albo drugi, mapowany na `100_70` |
-| Etat przy łączeniu | `etat_pracy` | 0–0,5, tylko UoP |
-| Tygodnie łączenia | `tygodnie_laczenia` | aktywne, gdy etat > 0 |
-| Wielkość płatnika | `liczba_ubezpieczonych` | ≤ 20 albo > 20 |
-| Etat w umowie | `wymiar_etatu` | 1 / 0,75 / 0,5 / 0,25 |
+| Tygodnie łączenia | `tygodnie_laczenia` | aktywne, gdy etat w pracy podczas urlopu jest większy od 0 |
+| Liczba ubezpieczonych | `liczba_ubezpieczonych` | liczba, tylko UoP i zlecenie. Progu nie wybiera się z osobnej listy |
+| Etat w umowie | `wymiar_etatu` | 1 / 0,75 / 0,5 / 0,25, tylko UoP, zaraz pod formą zatrudnienia |
+| Etat w pracy podczas urlopu | `etat_pracy` | 0–0,5, tylko UoP. To nie jest etat z umowy |
 | Brutto | `base_salary_gross` | **przed** odjęciem 13,71% |
 | Wiek dziecka | `wiek_dziecka_lata`, `wiek_dziecka_miesiace` | adopcja, piecza, ojcowski |
 | Odroczenie szkoły | `odroczenie_obowiazku_szkolnego` | piecza do 10 lat |
 | Wiek ubezpieczonego, dni L4, miesiące rehab. | `wiek_ubezpieczonego`, `dni_niezdolnosci`, `miesiace_rehabilitacji`, `rehabilitacja_w_ciazy` | zdarzenie ciąża |
 | Dni wyczekiwania, dług | `waiting_days`, `debt_amount` | JDG i zlecenie |
 
-Nad polami jest lista **Scenariusz demonstracyjny (presety 2026)**. Placeholder: „Wybierz scenariusz testowy / przypadek życiowy...”. Wybór woła `applyDemo` i wypełnia formularz jednym z dziewięciu przypadków z `DEMO_PRESETS`, potem ten sam `useEffect` co przy ręcznej edycji woła `POST /api/calculator/simulate`. Pod listą widać zdanie wprowadzające i cztery punkty (`hint` oraz `details`): dane wejściowe, wzór, przepis i miejsce, w którym wynik widać na ekranie. Liczby w tych punktach są policzone tymi samymi wzorami co sekcja 12 (8 200 → 7 075,78 → 5 766,76 / 5 074,75 i pozostałe przypadki z 12.20). Preset nie rusza parsera PDF. Górny pasek nie ma już listy „Scenariusz testowy” — te trzy grubsze persony (UoP, JDG, zlecenie) wybiera się tylko na ekranie startowym, a w kalkulatorze zostają presety. Przycisk **Wyczyść / Resetuj formularz** zdejmuje preset i zostawia parametry wariantu (podstawa, zatrudnienie, data). W trybie bez logowania pole imienia zostaje puste, z placeholderem „Wpisz imię i nazwisko lub wybierz preset...”. Po zalogowaniu reset wpisuje imię z konta (Anna). Ręczna edycja pola po presecie nie gasi opisu: opis dalej mówi o przypadku, który został wczytany.
+Nad polami jest lista **Scenariusz demonstracyjny (presety 2026)**. Zamknięta lista pokazuje „Wybierz z listy”: opcja ma `value=""`, `disabled` i `hidden`, więc Chromium nie wstawia jej do otwartej listy. Startowe `activePresetId` to `""`. Wybór woła `applyDemo` i wypełnia formularz jednym z dziewięciu przypadków z `DEMO_PRESETS`, potem ten sam `useEffect` co przy ręcznej edycji woła `POST /api/calculator/simulate`. Pod listą jest jedno zdanie `hint`, bez punktów „Dane / Podział / Długość / Gdzie widać”. Etykiety presetów to pierwsze człony, bez procentów i kwot: „1. Standard UoP”, „2. JDG (przedsiębiorca)”, „3. Sufit podstawy JDG / Zlecenie”, „4. Niski wymiar etatu”, „5. Łączenie urlopu rodzicielskiego z pracą”, „6. Wcześniactwo i hospitalizacja noworodka”, „7. Urlop macierzyński przed porodem”, „8. Adopcja dziecka”, „9. Ciąża L4 i świadczenie rehabilitacyjne”. Ten sam tekst idzie do dopisku „Aktywny preset: …”. Liczby widać w polach, na kafelkach i na wykresie. Preset nie rusza parsera PDF. Górny pasek nie ma listy „Scenariusz testowy” — trzy persony (UoP, JDG, zlecenie) wybiera się na ekranie startowym. Przycisk **Wyczyść / Resetuj formularz** zdejmuje preset i zostawia parametry wariantu (podstawa, zatrudnienie, data). W trybie bez logowania pole imienia zostaje puste, z placeholderem „Wpisz imię i nazwisko lub wybierz preset...”. Po zalogowaniu reset wpisuje imię z konta (Anna). Ręczna edycja pola po presecie nie gasi zdania pod listą.
+
+Kolejność pól po liście: rodzaj świadczenia, liczba dzieci, imiona, rola i data, wiek, forma zatrudnienia, etat w umowie (tylko UoP), brutto, liczba ubezpieczonych (UoP albo zlecenie), zadłużenie (JDG albo zlecenie), potem zwijane: urlop przed porodem, szpital, ciąża, przełączniki, wariant i łączenie z pracą. „Etat w umowie” i „Etat w pracy podczas urlopu” to dwa różne fakty. Drugi jest suwakiem w sekcji łączenia i pokazuje „N etatu”. JDG chowa etat umowy i całą sekcję łączenia. Nie ma drugiego selecta „wielkość płatnika”.
+
+Wykres po prawej nazywa się „Kolejność świadczeń”. Zdanie pod tytułem jest złożone z tych samych pasków co rysunek. Urlop ojcowski zaczyna się w tygodniu porodu i może nachodzić na macierzyński. Urlop przed porodem jest osobnym blokiem 100% przed kreską porodu. Szpital, obniżona stawka za pracę i wydłużenie są osobnymi paskami. Wyłączne 9 tygodni ojca ma etykietę „Dla ojca”, żeby wąski pasek się zmieścił. Notatki silnika o 14 tygodniach matki, o 9 tygodniach po 70% i o urlopie przed porodem są odfiltrowane wyrażeniem `CHART_NOTES`, bo żywe API skleja je czasem w jeden napis. Szczegóły geometrii są w sekcji 12.18.
 
 Przycisk **Importuj z symulacji ZUS / PDF** kopiuje pola tylko z `pdfCase` przekazanego z zakładki weryfikatora. Gdy `pdfCase` jest `null` (użytkownik nie otworzył weryfikatora i nic nie wgrał), formularz się nie zmienia i pojawia się komunikat, że kwota nie jest brana ze scenariusza. Import PDF nie podmienia persony sam z siebie. Otwarcie zakładki PDF publikuje od razu pierwszą sprawę fixture, więc import **po** wejściu w tę zakładkę wczyta tę sprawę, a import **przed** wejściem zostawia formularz.
 
@@ -973,9 +981,9 @@ Brak wieku w miesiącach przy porodzie zostawia 2 tygodnie. Segment startuje w `
 
 ### 12.15. Kolejność segmentów w kalendarzu
 
-To jest porządek, z którego bierze się tabela wypłat. Oś „Matka + Ojciec” jest uproszczeniem szerokości i nie trzyma tego porządku jeden do jednego (sekcja 12.18).
+To jest porządek, z którego bierze się tabela wypłat i wykres „Kolejność świadczeń”. Pozycje pasków są w sekcji 12.18.
 
-Kotwica to data porodu albo data z pola, także przy adopcji i pieczy (formularz dalej podpisuje ją „Data porodu”).
+Kotwica to data z pola. Przy porodzie podpis brzmi „Data porodu”, przy adopcji i pieczy „Data przyjęcia dziecka”, przy ciąży „Początek zwolnienia”.
 
 `care_parent` to matka, a przy `matka_nie_moze_opiekowac` ojciec. Urlop **przed** porodem zawsze zostaje przy matce. Ojciec przejmuje tylko blok po porodzie i urlop uzupełniający. Notatka o pierwszych 14 tygodniach matki jest doklejana tylko wtedy, gdy przełącznik jest wyłączony. Przy włączonym przełączniku notatka mówi, że urlop przed porodem zostaje przy matce, a zasiłek po porodzie i urlop uzupełniający przejmuje ojciec. Na osi pasek po porodzie przechodzi do wiersza ojca, a tygodnie przed porodem zostają przy matce.
 
@@ -1048,24 +1056,15 @@ Kolejność dat: od `due_date` (w tym zdarzeniu data początku zwolnienia) wynag
 
 Preset 9: UoP, wiek 40 lat, 270 dni, 2 miesiące rehabilitacji, nadal w ciąży, 25 ubezpieczonych, podstawa z 8 200 zł czyli 7 075,78 zł. Pracodawca 33 dni, ZUS 237 dni, rehabilitacja 60 dni, wszystko po 100%. Miesiąc na kafelku: **7 075,78 / 6 226,69 zł**. Płatnik zostaje pracodawcą, bo ubezpieczonych jest 25. Suma dni 330, `total_weeks` = 330 // 7 = 47, reszta 1 dzień.
 
-Odpowiedź niesie `pregnancy` z polami `sick_days_paid`, `employer_days`, `zus_sick_days`, `rehab_days`, `limit_days` (270), `rehab_in_pregnancy`. UI pokazuje to zdanie tylko gdy `plan.event === "ciaza_l4"` i jest `limit_days`. Pod polem „Miesiące rehabilitacji” jest podpowiedź, że świadczenie rusza po 270 dniach L4. W tym trybie zamiast osi „Matka + Ojciec” jest pasek: wynagrodzenie chorobowe pracodawcy (33 albo 14 dni, 100%), zasiłek chorobowy ZUS (do 270 dni, 100%) i świadczenie rehabilitacyjne (100% w ciąży albo 90%/75% poza nią). Pusty obiekt przy innym zdarzeniu nie jest rysowany.
+Odpowiedź niesie `pregnancy` z polami `sick_days_paid`, `employer_days`, `zus_sick_days`, `rehab_days`, `limit_days` (270), `rehab_in_pregnancy`. UI pokazuje ten układ tylko gdy `plan.event === "ciaza_l4"`. Pod polem „Miesiące rehabilitacji” jest podpowiedź, że świadczenie rusza po 270 dniach L4. W tym trybie zamiast wykresu „Kolejność świadczeń” jest pasek: wynagrodzenie chorobowe pracodawcy (33 albo 14 dni, 100%), zasiłek chorobowy ZUS (do 270 dni, 100%) i świadczenie rehabilitacyjne (100% w ciąży albo 90%/75% poza nią). Pusty obiekt przy innym zdarzeniu nie jest rysowany.
 
-### 12.18. Co widać na osi „Matka + Ojciec”
+### 12.18. Co widać na wykresie „Kolejność świadczeń”
 
-Oś nie rysuje segmentów z sekcji 12.15. Bierze `breakdown` i rozciąga paski do 100% aktualnej sumy, więc sama dolna skala zmienia liczby, gdy plan się wydłuża. Szerokości:
+Wykres rysuje te same kawałki co łańcuch z sekcji 12.15, każdy jako osobny pasek. Pozycja jest w tygodniach od porodu: ujemna dla urlopu przed porodem, zero to kreska `.birth-mark`. Szerokość to `długość / span`, gdzie `span` sięga od najwcześniejszego startu do najdalszego końca. Paski jednej osoby dostają tory w `withLanes`, liczone osobno dla matki i dla ojca, żeby ojcowski nie spadał na drugi tor tylko dlatego, że w czasie nachodzi na macierzyński matki. Dwa paski tej samej osoby w tym samym tygodniu (ojcowski i macierzyński ojca, gdy matka nie może opiekować) dostają dwa tory.
 
-```text
-maternitySpan = pre_birth_weeks + maternity_weeks + premature_weeks
-extension idzie do matki, gdy rola nie jest "ojciec", inaczej do ojca
-motherShare = parental_weeks_mother + to wydłużenie
-fatherShare = parental_weeks_father_exclusive + wydłużenie ojca
-span = max(1, maternitySpan + motherShare + fatherShare + paternity_weeks)
-szerokość paska = tygodnie / span
-```
+Kolejność na wierszu osoby opiekującej się dzieckiem po porodzie: macierzyński, potem „Po szpitalu” przy `premature_weeks`, potem rodzicielski pełną stawką, potem obniżony (`stawka × (1 − etat)`) i wydłużenie, potem udział drugiego rodzica. Urlop przed porodem jest blokiem `full` na wierszu matki, przed zerem. Ojcowski jest osobnym paskiem od zera, na wierszu ojca, i nachodzi na macierzyński. Etykieta wyłącznych 9 tygodni to „Dla ojca”. Skala czyta się „N tyg. przed” albo „Poród” / „Przyjęcie”, a na końcu „Koniec”.
 
-Jeden zielony blok matki zbiera więc poród przed terminem, macierzyński i szpital. Szary prostokąt `timeline-empty` dopełnia wiersz do prawej krawędzi. Pasek ojca zaczyna się po `maternitySpan`, a dwa tygodnie ojcowskie stoją za jego dziewiątką, nie od dnia porodu. Tabela wypłat jest miejscem, w którym widać prawdziwą kolejność, stawki 100% i 40,75% oraz równoległy ojcowski.
-
-Przy porodzie, adopcji i pieczy pod skalą jest zdanie klasy `.helper`: symulacja układa urlop ciągiem, a w praktyce rodzicielski można wziąć jednorazowo albo podzielić najwyżej na 5 części, do końca roku, w którym dziecko kończy 6 lat. Niebieska notatka o 9 tygodniach drugiego rodzica zostaje pod spodem. Przy ciąży L4 tej osi nie ma: jest pasek okresu chorobowego z sekcji 12.17. Gdy „Matka nie może sprawować opieki” jest włączone, pasek macierzyński po porodzie stoi w wierszu ojca, a urlop przed porodem w wierszu matki.
+Zdanie pod nagłówkiem „Kolejność świadczeń” jest złożone z tych pasków, w kolejności startu. Legenda wymienia tylko użyte tony. Przy ciąży L4 tego wykresu nie ma: jest pasek okresu chorobowego z sekcji 12.17. Notatki o 14 tygodniach, o 9 tygodniach po 70% i o urlopie przed porodem nie są dorysowywane pod wykresem. Zostają w silniku i odpadają w filtrze `CHART_NOTES`.
 
 `breakdown` zwracany przez API:
 
@@ -1108,7 +1107,7 @@ Wszystkie poza tymi, gdzie tabela mówi inaczej: Ewa Malinowska i Piotr Malinows
 | 8. Adopcja 13,95 | zdarzenie adopcja, wiek 13,95, bez „Za życiem” | gwarancja 9 + 38, z tego ojciec 9 po 70%; ojcowski 2 tyg. po 100% obok; razem 49 tyg. |
 | 9. Ciąża | `ciaza_l4`, wiek 40, 270 dni, 2 miesiące rehabilitacji w ciąży | 33 dni pracodawcy, 237 dni zasiłku, 60 dni rehabilitacji, wszystko 100%; kafelek 7 075,78 / 6 226,69; płatnik pracodawca |
 
-Te same liczby są w opisach pod listą presetów w kalkulatorze i w asercjach `backend/tests/audit_2026.py`.
+Te same liczby są na kafelkach, na wykresie i w asercjach `backend/tests/audit_2026.py`. Zdanie pod listą presetów ich nie powtarza.
 
 ### 12.21. Płatnik
 
@@ -1118,10 +1117,10 @@ Te same liczby są w opisach pod listą presetów w kalkulatorze i w asercjach `
 | --- | --- | --- |
 | UoP, liczba > 20 | Pracodawca | brak, sam wypłaca |
 | UoP, liczba ≤ 20 | ZUS | Z-3 |
-| zlecenie, > 20 | Zleceniodawca | brak |
-| zlecenie, ≤ 20 | ZUS | Z-3a |
-| JDG, niezależnie od liczby | ZUS | ZAM do ZUS. Notatka: Z-3 nie jest wymagane, formularz Z-3b został zlikwidowany 24.10.2026 r. |
-| ustanie, niezależnie od liczby | ZUS | ZAM i „Dokument potwierdzający ustanie zatrudnienia” |
+| zlecenie, > 20 | Zleceniodawca | ZAM, ZUR i ZAO. Z-3a nie jest wymagane |
+| zlecenie, ≤ 20 | ZUS | Z-3a, ZAM, ZUR i ZAO |
+| JDG, niezależnie od liczby | ZUS | ZAM, ZUR i ZAO. Notatka: Z-3 nie jest wymagane, formularz Z-3b zniesiono 24.10.2026 r. ZUR zostaje dla urlopu rodzicielskiego, ZAO dla ojcowskiego. |
+| ustanie, niezależnie od liczby | ZUS | ZAM, ZUR, ZAO i „Dokument potwierdzający ustanie zatrudnienia” |
 
 `is_zus` jest prawdziwe dla JDG, ustania i każdej innej pary, w której liczba ≤ 20. Tytuł na kafelku „Płatnik: …” bierze się z pola `title`.
 
@@ -1133,9 +1132,10 @@ Kolejność:
 
 1. `fitz.open` ze strumienia bajtów. Błąd → `ValueError`.
 2. `page.get_text("text")` ze wszystkich stron, sklejone.
-3. Pusty tekst i brak `GEMINI_API_KEY`: wynik z błędem „Brak warstwy tekstowej…”, podstawa `null`, miesięczna kwota „—”. **Żadnych 8200, 6683 ani 18.09.2026.**
-4. Jest tekst: `_offline_result` wyciąga regexami nazwisko, rolę, datę, kwotę, tytuł ubezpieczenia, liczbę ubezpieczonych, wariant i rodzaj zdarzenia (`_benefit_type`: piecza, adopcja, ciąża L4 albo poród). Ten `benefit_type` idzie do `calculate_benefit_plan`. Brak Z-3a przy zleceniu jest błędem tylko wtedy, gdy płatnikiem jest ZUS: liczba ubezpieczonych ≤ 20 albo w tekście nie ma informacji, że jest ich powyżej 20. Zlecenie powyżej 20 osób nie dostaje wezwania o Z-3a.
-5. Jest klucz: Gemini 2.5 Flash (`gemini-2.5-flash`) uzupełnia tylko puste pola albo, przy skanie, dostaje PNG stron. `_merge_gemini` nie nadpisuje pola, które lokalny parser już ma. Błąd modelu nie podstawia fixture. Zostaje wynik lokalny albo komunikat, że OCR nic nie oddał.
+3. Pusty tekst: RapidOCR czyta najwyżej dwie pierwsze strony z pixmapy 200 DPI. Instancja `RapidOCR()` powstaje przy pierwszym skanie.
+4. Tekst nadal pusty: błąd zawiera „warstw”, `confidence` wynosi 0, `base_salary_gross` i `base_amount_value` są `null`, a miesięczna kwota to „—”. **Żadnych 8200, 6683 ani 18.09.2026.**
+5. Jest tekst: `_offline_result` wyciąga regexami nazwisko, rolę, datę, kwotę, tytuł ubezpieczenia, liczbę ubezpieczonych, wariant, rodzaj zdarzenia (`_benefit_type`: piecza, adopcja, ciąża L4 albo poród) oraz ślad załączników Z-3 / Z-3a. Ten `benefit_type` idzie do `calculate_benefit_plan`. Brak Z-3a przy zleceniu jest błędem tylko wtedy, gdy płatnikiem jest ZUS: liczba ubezpieczonych ≤ 20 albo w tekście nie ma informacji, że jest ich powyżej 20. Zlecenie powyżej 20 osób nie dostaje wezwania o Z-3a.
+6. Jest `NVIDIA_API_KEY` i brakuje imienia, daty, podstawy albo formy zatrudnienia: surowy tekst (do 6000 znaków) idzie na `https://integrate.api.nvidia.com/v1/chat/completions`, model `nvidia/nemotron-3.5-bolt-e4b`, `temperature` 0, timeout 12 s. `_merge_nvidia` wpisuje tylko puste pola. Błąd sieci zostawia wynik parsera. Kwotę świadczenia zawsze liczy `calculate_benefit_plan`. Test regresyjny zdejmuje ten klucz przed importem.
 
 Wykrywanie zatrudnienia szuka słów w nawiasach logicznych (`pracownik` albo `umow` razem z `prac`, JDG, zlecenie, upadłość). Nazwisko nie przechodzi przez znak nowej linii i obcina końcówkę „matka / ojciec / opiekun”.
 
@@ -1184,7 +1184,7 @@ $env:API_PORT = "8001"
 .\.venv\Scripts\python.exe tests\audit_2026.py
 ```
 
-Skrypt sam zdejmuje `GEMINI_API_KEY` z otoczenia, żeby parser szedł offline. Sprawdza funkcję `calculate_benefit_plan` i dwa PDF-y w pamięci (PyMuPDF): tekstowy wniosek JDG oraz pusty skan. Szuka w `backend/*.py` i `frontend/src` wpisu `6683` jako cichej kwoty. Jeśli `API_PORT` jest ustawiony, uderza w `/openapi.json`, `POST /api/calculator/simulate` i preflight CORS.
+Skrypt sam zdejmuje `GEMINI_API_KEY` i `NVIDIA_API_KEY` z otoczenia, żeby parser szedł offline. Sprawdza funkcję `calculate_benefit_plan` i dwa PDF-y w pamięci (PyMuPDF): tekstowy wniosek JDG oraz pusty skan. Szuka w `backend/*.py` i `frontend/src` wpisu `6683` jako cichej kwoty. Jeśli `API_PORT` jest ustawiony, uderza w `/openapi.json`, `POST /api/calculator/simulate` i preflight CORS.
 
 Ostatni pełny przebieg przeciwko API z aktualnym kodem: **0 FAIL**, łącznie z 5 766,76, podłogą 4 147,10, sufitem 20 321,30, podwyższeniem do 1 000, wydłużeniem 5 tygodni, stawkami 40,75% i 81,5%, szpitalem, adopcją 9+38 / 9+62, pieczą, 33/14 dniami, rehabilitacją i płatnikami.
 
@@ -1214,8 +1214,8 @@ Po zmianie stałej w Pythonie proces uvicorn bez `--reload` dalej serwuje stary 
 - Tytuł karty przeglądarki to `ZUS - Świadczenia rodzicielskie`, a ikona to `/favicon.svg`. Oba biorą się z `frontend/.figma/make/site.json` przy starcie Vite. Zmiana `site.json` albo `vite.config.ts` wymaga ponownego startu dev servera, bo wtyczka czyta je przy ładowaniu konfiguracji.
 - `calculateLocally` jest przybliżeniem do czasu odpowiedzi API. Różnica grosza jest możliwa przy kwotach, których `Math.round` i `ROUND_HALF_UP` nie pokrywają tak samo.
 - CORS `*` jest do dema na localhost.
-- Z-3b nie jest wymaganym drukiem. Notatka przy JDG mówi, że formularz zniesiono 24.10.2026. Zostaje ZAM.
-- Klucz Gemini, jeśli ktoś go wstawi do środowiska procesu, idzie tylko do odczytu PDF. Nie liczy zasiłku i nie wolno go commitować (`.env` jest ignorowany).
+- Z-3b nie jest wymaganym drukiem. Notatka przy JDG mówi, że formularz zniesiono 24.10.2026 r. rozporządzeniem MRPiPS z 27.09.2026 r. (Dz.U. poz. 1316). ZAM zostaje wnioskiem o zasiłek macierzyński. Przy działalności, zleceniu i po ustaniu zatrudnienia ZUR i ZAO nadal obowiązują.
+- `NVIDIA_API_KEY` idzie tylko do uzupełnienia pustych pól PDF i nie liczy zasiłku. W Compose jest klucz sandboxowy na ocenę; lokalny `.env` zostaje w `.gitignore`.
 
 ## 19. Kalkulator na ekranie — wartości i jak to sprawdzić
 
@@ -1238,7 +1238,7 @@ Górny pasek nie ma listy scenariuszy. Jedyne miejsce z dziewięcioma przypadkam
 | Data porodu | 18.09.2026 |
 | Wariant | 81,5% przez cały okres |
 | Urlop ojcowski | włączony |
-| Liczba ubezpieczonych | 25, select „Powyżej 20 ubezpieczonych” |
+| Liczba ubezpieczonych | 25, samo pole liczby. Nie ma selecta „Do 20 / Powyżej 20” |
 | Wymiar etatu w umowie | Pełny etat |
 | Brutto przed 13,71% | 8 200 |
 | Za życiem, matka nie może opiekować, odroczenie szkoły | wyłączone |
@@ -1258,18 +1258,18 @@ Stan formularza (`calcForm`), wybrany preset i rozwinięcie harmonogramu siedzą
 | Zdarzenie i zatrudnienie | Widać | Nie widać |
 | --- | --- | --- |
 | Poród | urlop przed porodem, hospitalizacja, wariant, łączenie z pracą (tylko UoP), wiek w miesiącach, ojcowski (gdy rola nie jest opiekunem) | wiek w latach, L4, odroczenie szkoły |
-| Ciąża L4 | wiek, dni niezdolności, miesiące rehabilitacji z podpowiedzią o 270 dniach, przełącznik „nadal w ciąży”; przy JDG i zleceniu także dni dobrowolnego ubezpieczenia | urlop przed porodem, szpital, Za życiem, ojcowski, „matka nie może”, wariant, łączenie z pracą, oś Matka + Ojciec |
+| Ciąża L4 | wiek, dni niezdolności, miesiące rehabilitacji z podpowiedzią o 270 dniach, przełącznik „nadal w ciąży”; przy JDG i zleceniu także dni dobrowolnego ubezpieczenia | urlop przed porodem, szpital, Za życiem, ojcowski, „matka nie może”, wariant, łączenie z pracą, wykres „Kolejność świadczeń” |
 | Adopcja | wiek w latach, data „Data przyjęcia dziecka”, ojcowski poza rolą opiekuna | miesiące, urlop przed porodem, szpital, odroczenie szkoły |
 | Piecza | wiek w latach i odroczenie do 10 lat | ojcowski, miesiące, urlop przed porodem, szpital |
 | Zatrudnienie inne niż umowa o pracę | zadłużenie przy JDG i zleceniu | łączenie z pracą oraz select „Wymiar etatu w umowie” |
 
 Ręczna zmiana zatrudnienia ustawia liczbę ubezpieczonych: JDG 1, zlecenie 12, ustanie 8, umowa o pracę 25. Zejście z umowy o pracę zeruje etat łączenia i tygodnie łączenia. Preset nie przechodzi przez ten skrót: kładzie własne liczby.
 
-### 19.3. Dwie pary kontrolek, które się doganiają
+### 19.3. Liczba ubezpieczonych i łączenie z pracą
 
-**Płatnik.** Select „Do 20” przy liczbie powyżej 20 wpisuje 15. Select „Powyżej 20” przy liczbie 20 lub mniejszej wpisuje 25. Jeśli liczba już jest po właściwej stronie progu, select jej nie rusza. Wpisanie liczby sam przełącza select: 20 i mniej to „Do 20”, 21 i więcej to „Powyżej 20”.
+**Płatnik.** Jest jedno pole „Liczba ubezpieczonych”, widoczne przy umowie o pracę i przy zleceniu. Próg 20 liczy silnik z wpisanej liczby. Zmiana formy zatrudnienia ustawia 25, 12, 1 albo 8. Nie ma drugiego selecta, który wpisywałby 15 albo 25.
 
-**Łączenie z pracą.** Suwak na 0 zeruje „Tygodnie łączenia” i je wyłącza (pole szare, `disabled`). Podniesienie suwaka z 0, gdy tygodnie są 0, wpisuje 10. Preset, który sam ustawia inną liczbę tygodni, nie jest przez to nadpisywany.
+**Łączenie z pracą.** Suwak nazywa się „Etat w pracy podczas urlopu” i pokazuje „N etatu”. Na 0 zeruje „Tygodnie łączenia” i je wyłącza (pole szare, `disabled`). Podniesienie suwaka z 0, gdy tygodnie są 0, wpisuje 10. Preset, który sam ustawia inną liczbę tygodni, nie jest przez to nadpisywany. To nie jest select „Etat w umowie”.
 
 ### 19.4. Prawa kolumna przy presecie 1
 
@@ -1277,15 +1277,16 @@ Po wyborze „1. Standard UoP — wariant 81,5% + 9 tyg. ojca” i po odpowiedzi
 
 | Miejsce | Wartość |
 | --- | --- |
-| Pasek u góry | Ewa Malinowska, dopisek „Aktywny preset: 1. Standard UoP…” |
+| Pasek u góry | Ewa Malinowska, dopisek „Aktywny preset: 1. Standard UoP” |
 | Kafelek brutto | 5 766,76 zł, pod spodem podstawa 7 075,78 zł i 81,5% |
 | Kafelek netto | 5 074,75 zł |
-| Kafelek płatnika | 63 tyg., „Płatnik: Pracodawca”, firma powyżej 20 osób, bez Z-3 |
-| Oś mamy | Macierzyński 20 tyg. · 81,5%, potem Rodzicielski 32 tyg. |
-| Oś taty | 9 tyg. · 70%, obok 2 tyg. ojcowski |
-| Skala | Poród, 20 tyg., 52 tyg., 63 tyg. |
+| Kafelek płatnika | 63 tyg., „Płatnik: Pracodawca”, notatka o płatniku powyżej 20 osób, bez Z-3 |
+| Zdanie nad wykresem | Matka: Macierzyński, potem Rodzicielski. Ojciec: Dla ojca, ojcowski od porodu |
+| Wykres matki | Macierzyński 20 tyg. · 81,5%, potem Rodzicielski 32 tyg. |
+| Wykres ojca | „Dla ojca” 9 tyg. · 70% oraz ojcowski 2 tyg. · 100% od kreski porodu, na osobnym torze tylko gdy nachodzi na inny pasek tej samej osoby |
+| Skala | Poród po lewej, Koniec po prawej |
 | Harmonogram | pierwsze 12 miesięcy, od września 2026; przycisk „Pokaż wszystkie miesiące” |
-| Opis pod listą | cztery punkty: Dane, Podstawa, Wymiar, Płatnik |
+| Opis pod listą | jedno zdanie: „Zwykła umowa o pracę i wariant 81,5%.” |
 
 Presety 5, 6, 8 i 9 same rozwijają harmonogram. Przycisk czyta się wtedy „Pokaż skrót”, a podpis nad tabelą to „Cały okres świadczenia”.
 
@@ -1300,7 +1301,7 @@ Wzory są w 12.20. Tutaj jest tylko to, co da się wskazać palcem.
 | 4. 1/4 etatu | umowa, etat w umowie 1/4, brutto 1 201,50 | oba kafelki 1 000,00 zł i dopisek o podwyższeniu |
 | 5. Łączenie | suwak 0,5 i 10 tygodni, harmonogram rozwinięty | 68 tyg.; w 2027 r. wiersze „Rodzicielski łączony z pracą” po 40,75%, potem „Wydłużenie za pracę” po 81,5% |
 | 6. Szpital | tydzień 30, masa 1 400, dni 20, pola pobytu puste | licznik „Uzupełniający urlop: 3 tyg.”, macierzyński dalej 5 766,76 zł, plan 66 tyg., w tabeli wiersz 100% |
-| 7. Przed porodem | suwak 4 | napis „4 tyg. · 100%”, suma zostaje 63 tyg., przed wrześniem 2026 wiersz „Urlop przed porodem” |
+| 7. Przed porodem | suwak 4 | napis „4 tyg. · 100%”, suma zostaje 63 tyg. Zdanie wykresu: matka ma „Przed porodem 4 tyg. · 100%”, potem macierzyński 16 tyg., potem rodzicielski 32 tyg. Ojciec ma ojcowski od porodu i „Dla ojca” 9 tyg. · 70%. W tabeli przed wrześniem 2026 jest wiersz „Urlop przed porodem” |
 | 8. Adopcja | Adopcja, wiek 13,95 roku, pole miesięcy puste, brak szpitala i urlopu przed porodem, harmonogram rozwinięty | 9 + 38 tygodni, ojcowski 2 tyg. obok, razem 49 tyg. |
 | 9. Ciąża | tylko blok L4: wiek 40, dni 270, rehabilitacja 2, przełącznik ciąży włączony | kafelek 7 075,78 / 6 226,69 zł; w tabeli wynagrodzenie chorobowe, zasiłek chorobowy 100% i świadczenie rehabilitacyjne |
 
@@ -1311,18 +1312,18 @@ Przejście z presetu 9 na 6 musi zgasić L4 i pokazać szpital 30 / 1 400 / 20. 
 Odhaczaj po kolei na szerokim oknie.
 
 1. W pasku u góry nie ma napisu „Scenariusz testowy”. Bez logowania po lewej jest „Symulacja bez logowania · …”, a pastylka mówi „Bez konta PUE”. Po mObywatelu po lewej jest Anna Kowalska, a pastylka „Wyślij zapytanie do PUE/eZUS”.
-2. Pusta lista presetów ma placeholder „Wybierz scenariusz testowy / przypadek życiowy...”.
-3. Preset 1 ustawia Ewę i Piotra, 8 200, 25, datę 18.09.2026 i kwoty z 19.4. Bez logowania pasek zostaje „Symulacja bez logowania · Aktywny preset:” i nie udaje konta. Po mObywatelu pasek pokazuje Ewę oraz „Aktywny preset:”.
+2. Zamknięta lista presetów pokazuje „Wybierz z listy”. Po otwarciu tej opcji nie ma.
+3. Preset 1 ustawia Ewę i Piotra, 8 200, 25, datę 18.09.2026 i kwoty z 19.4. Pod listą jest jedno zdanie, bez czterech punktów. Bez logowania pasek zostaje „Symulacja bez logowania · Aktywny preset: 1. Standard UoP” i nie udaje konta. Po mObywatelu pasek pokazuje Ewę oraz ten sam dopisek.
 4. Preset 9 chowa urlopy, wariant i łączenie, pokazuje L4 i rozwija tabelę. Potem preset 6 przywraca szpital i chowa L4.
 5. Preset 8 pokazuje wiek w latach, bez miesięcy i bez odroczenia szkoły. „Piecza zastępcza” dokłada odroczenie i chowa urlop ojcowski. Poród chowa lata, pokazuje miesiące i z powrotem ojcowski, o ile rola nie jest opiekunem.
 6. Przy umowie o pracę suwak łączenia na 0,5 wpisuje 10 tygodni i odblokowuje pole. Powrót suwaka na 0 wpisuje 0 i je szarzeje. Zmiana zatrudnienia na JDG chowa cały ten blok.
-7. Wpisanie 8 ubezpieczonych przełącza select na „Do 20”. Wybór „Powyżej 20” wpisuje 25. Wybór „Do 20” przy 25 wpisuje 15.
+7. Przy umowie o pracę i zleceniu widać liczbę ubezpieczonych. Przy JDG i ustaniu tego pola nie ma. Wpis 8 przy umowie o pracę zostawia 8, a kafelek płatnika mówi o ZUS i Z-3. Nie ma selecta „Do 20 / Powyżej 20”.
 8. Import PDF bez wcześniejszego wejścia w weryfikator nie zmienia 8 200 ani nazwiska. Komunikat: „Najpierw wgraj PDF albo wybierz sprawę w weryfikatorze. Formularz zostaje bez zmian i nie bierze kwoty ze scenariusza.” Wejście w zakładkę PDF samo publikuje pierwszą sprawę fixture, więc import dopiero po tym wejściu już coś wczyta.
 9. „Wyczyść / Resetuj formularz” gasi „Aktywny preset”. Bez logowania pole imienia zostaje puste. Po zalogowaniu wraca imię Anny.
 10. Ręczna zmiana brutto po presecie nie gasi zielonego opisu pod listą. Opis dalej dotyczy wczytanego przypadku.
-11. Przy porodzie pod „Matka nie może sprawować opieki” jest zdanie, że urlop przed porodem zostaje przy matce, a zasiłek po porodzie i urlop uzupełniający przejmuje ojciec. Włączony przełącznik przenosi pasek po porodzie do wiersza ojca.
-12. Pod skalą „Matka + Ojciec” (poród, adopcja, piecza) jest zdanie o ciągu i o 5 częściach do końca roku, w którym dziecko kończy 6 lat. Przy ciąży L4 zamiast tej osi jest pasek wynagrodzenia chorobowego, zasiłku ZUS i rehabilitacji.
-13. Przy wariancie 81,5% data na karcie to 9 października 2026. Na karcie są wyjątki 100% (przed porodem, szpital, ojcowski) i 70% (9 tygodni drugiego rodzica). Pod wariantami jest skutek spóźnienia: po terminie nie wybiera się już 81,5%, zostaje 100% + 70%, a przełączenie w kalkulatorze jest ręczne.
+11. Przełącznik „Matka nie może sprawować opieki” nie ma pod sobą akapitu. Włączony przenosi na wykresie blok po porodzie do wiersza ojca. Blok „Przed porodem” zostaje przy matce.
+12. Nagłówek wykresu to „Kolejność świadczeń”, a zdanie pod nim wymienia paski po kolei. Nie ma zdania o 5 częściach urlopu ani notatki o 9 tygodniach pod skalą. Przy ciąży L4 zamiast tego wykresu jest pasek wynagrodzenia chorobowego, zasiłku ZUS i rehabilitacji, z liczbą dni z planu.
+13. Przy wariancie 81,5% data na karcie wariantu i w nagłówku planu to 9 października 2026. Wyjątki 100% i 70% widać na paskach wykresu, nie w osobnym akapicie pod wariantami.
 14. Ustawienie „2 dzieci” przy porodzie pokazuje nad polami szpitala zdanie o porodzie mnogim (najniższa masa i najdłuższy pobyt). Przy jednym dziecku tego zdania nie ma. Wpis 30 / 1 400 / 20 nadal daje 3 tygodnie.
 
 ### 19.7. Lista kontrolna responsywności
@@ -1334,7 +1335,7 @@ Szerokość ustawia się w narzędziach przeglądarki (szerokość viewportu), n
 - Dwie kolumny: formularz po lewej (około 40%, nie węziej niż 350 px), plan po prawej.
 - Kafelki kwot w jednym rzędzie, liczby około 1,55 rem, paski osi 58 px wysokości.
 - Zakładki zdarzenia w dwóch kolumnach, pola podwójne i potrójne obok siebie.
-- Nawigacja pokazuje pełne nazwy zakładek i numery 01–05. Nie ma zielonego paska postępu nad treścią.
+- Nawigacja pokazuje pełne nazwy pięciu zakładek, bez numerów 01–05. Nie ma zielonego paska postępu nad treścią. Numery są na dolnych paskach „NASTĘPNY KROK”.
 - Harmonogram jest tabelą z pięcioma kolumnami.
 - Nie ma dolnej belki „Zmień dane”.
 
@@ -1342,15 +1343,15 @@ Szerokość ustawia się w narzędziach przeglądarki (szerokość viewportu), n
 
 - Jedna kolumna. Plan jest pod formularzem, nie obok.
 - Wybór presetu po około 220 ms przewija do planu.
-- Nawigacja przewija się w poziomie. Widać skróty: Mój status, Kalkulator, Weryfikator PDF, Dokumenty, Wsparcie. Numer i długa nazwa znikają.
-- Nad treścią jest zielony pasek postępu. Na kalkulatorze ma około 40% szerokości (krok 2 z 5).
+- Nawigacja przewija się w poziomie. Widać skróty w kolejności zakładek: Mój status, Kalkulator, Dokumenty, Weryfikator PDF, Wsparcie. Długa nazwa znika.
+- Nad treścią jest zielony pasek postępu. Na kalkulatorze ma około 40% szerokości (krok 2 z 5). Na dokumentach około 60%, na weryfikatorze około 80%.
 - Pastylka połączenia zostaje ikoną, bez słów „Podgląd” i „PUE”.
 - Siatka kafelków: pierwszy na całą szerokość, netto i płatnik obok siebie.
 
 **520 px i węziej** (sprawdź 520 × 844).
 
 - Zakładki zdarzenia, pary pól i trójki (szpital, L4) lecą jedną kolumną. Przycisk resetu w zielonej karcie presetu łamie się pod etykietą, nie wychodzi poza kartę.
-- Oś czasu nie wystaje z karty. Skala zaczyna się 64 px od lewej, awatary rodziców są schowane, paski mogą być węższe niż 64 px i mają 46 px wysokości.
+- Wykres nie wystaje z karty. Skala zaczyna się 64 px od lewej, awatary rodziców są schowane, paski mogą być węższe niż etykieta.
 - Tabela wypłat nie jest tabelą: każdy wiersz to pięć linii z etykietą (Miesiąc, Rodzic, Świadczenie, Stawka, Kwota brutto). Nagłówek kolumn jest niewidoczny, ale zostaje dla czytnika.
 - Na dole jest belka 67 px: „Szacunkowo netto / mies.” i przycisk „Zmień dane”. „Zmień dane” przewija na górę formularza. Na wysokości telefonu, przy scrollu 0, belka nie zasłania „Pobierz PDF”. Przycisk PDF jest wyżej, belka jest przypięta do dołu.
 - Przy presecie 5 wiersz 40,75% mieści się w karcie, bez poziomego scrolla.
@@ -1367,11 +1368,11 @@ Wejście dzieli się na dwa tryby. **Bez logowania** niesie tylko parametry wari
 
 1. **Ekran startowy** ustawia `scenarioId` (`uop_over_20`, `jdg_active`, `zlecenie_no_waiting`). Z niego biorą się status i parametry wariantu. W trybie bez logowania nie biorą się z niego imię ani PESEL. Po zalogowaniu, dopóki kalkulator nie opublikuje planu, wniosek może pokazać Annę Kowalską.
 2. **Kalkulator** po każdej zmianie woła `onFiledCase`. Obiekt `FiledPlan` niesie imię, rolę, datę, rodzaj świadczenia, liczbę dzieci, zatrudnienie, brutto, wariant, płatnika (`title`, `is_zus`, `required_forms`, notatkę), termin `deadline_21_days` oraz tygodnie z `breakdown`. W trybie bez logowania imię startuje puste. Preset albo wpisane nazwisko je wypełnia. Dziewięć presetów, suwaki i eksport PDF liczą się tak samo w obu trybach. Formularz przeżywa zmianę zakładki.
-3. **Wnioski i dokumenty** oraz kreator czytają `FiledPlan`, gdy jest. Na dole kalkulatora zielony przycisk „Przejdź do wniosku ZAM i dokumentów” otwiera tę zakładkę. Na liście akcja wypełnienia nazywa się „Wypełnij online”, a w kreatorze wysyłka to „Symuluj podpis i wysyłkę do ZUS / Pracodawcy”. Krok zaświadczenia i węzeł ścieżki biorą się z `required_forms`: UoP powyżej 20 osób bez Z-3, UoP do 20 osób z Z-3, zlecenie powyżej 20 bez Z-3a, zlecenie do 20 z Z-3a, JDG to ZAM bez Z-3, ustanie to ZAM i dokument ustania (węzeł: „Wypłata przez ZUS po ustaniu zatrudnienia”). Urlop do pracodawcy przy JDG, zleceniu i ustaniu ma status „Nie dotyczy (brak urlopu z KP — przysługuje zasiłek z ZUS)”. Czwarty krok to akt urodzenia, orzeczenie o przysposobieniu albo postanowienie o pieczy. Przy porodzie podgląd aktu ma etykietę „Podgląd i wniosek” i link do `https://www.gov.pl/web/cyfryzacja/rejestr-stanu-cywilnego`. Przy każdym kroku jest „Załącz plik” (PDF, JPG, PNG, DOCX). Po wyborze widać nazwę, status „ZAŁĄCZONO (nazwa)” i „Zmień / Usuń”, a podgląd dopisuje nazwę pliku. Pliki i „WYSŁANO” zostają po zmianie zakładki. Znikają po resecie formularza, wylogowaniu, zmianie scenariusza albo edycji pól kalkulatora. Komunikat o zniesieniu Z-3b od 24.10.2026 prowadzi do `https://www.zus.pl/swiadczenia/zasilki/zasilek-macierzynski`. W weryfikatorze „Ustawa zasiłkowa” otwiera `https://isap.sejm.gov.pl/isap.nsf/DocDetails.xsp?id=WDU19990600636`. Każdy link z `target="_blank"` ma `rel="noopener noreferrer"`. PDF checklisty wysyła `scenario_id` oraz pola planu. Plik `.ics` mówi „21 dni od daty porodu” albo „od daty przyjęcia dziecka”.
-4. **Weryfikator PDF** publikuje `pdfCase` jak dotychczas. Przycisk **Przenieś dane do kalkulatora i policz** przełącza zakładkę, woła ten sam import co przycisk w formularzu i na 1,6 s podświetla przeniesione pola. Brak kwoty, daty albo nazwiska niczego nie wymyśla.
+3. **Wnioski i dokumenty** oraz kreator czytają `FiledPlan`, gdy jest. Na dole kalkulatora zielony przycisk „Przejdź do wniosku ZAM i dokumentów” otwiera tę zakładkę. Na liście akcja wypełnienia nazywa się „Wypełnij online”, a w kreatorze wysyłka to „Symuluj podpis i wysyłkę do ZUS / Pracodawcy”. Krok zaświadczenia i węzeł ścieżki biorą się z `required_forms`: UoP powyżej 20 osób bez Z-3, UoP do 20 osób z Z-3, zlecenie powyżej 20 bez Z-3a, zlecenie do 20 z Z-3a, a przy zleceniu, JDG i ustaniu dodatkowo ZUR oraz ZAO. JDG to ZAM bez Z-3, ustanie to ZAM i dokument ustania (węzeł: „Wypłata przez ZUS po ustaniu zatrudnienia”). Urlop do pracodawcy przy JDG, zleceniu i ustaniu ma status „Nie dotyczy (brak urlopu z KP — przysługuje zasiłek z ZUS)”. Czwarty krok to akt urodzenia, orzeczenie o przysposobieniu albo postanowienie o pieczy. Przy porodzie podgląd aktu ma etykietę „Podgląd i wniosek” i link do `https://www.gov.pl/web/cyfryzacja/rejestr-stanu-cywilnego`. Przy każdym kroku jest „Załącz plik” (PDF, JPG, PNG, DOCX). Po wyborze widać nazwę, status „ZAŁĄCZONO (nazwa)” i „Zmień / Usuń”, a podgląd dopisuje nazwę pliku. Pliki i „WYSŁANO” zostają po zmianie zakładki. Znikają po resecie formularza, wylogowaniu, zmianie scenariusza albo edycji pól kalkulatora. Komunikat o zniesieniu Z-3b od 24.10.2026 prowadzi do `https://www.zus.pl/swiadczenia/zasilki/zasilek-macierzynski`. W weryfikatorze „Ustawa zasiłkowa” otwiera `https://isap.sejm.gov.pl/isap.nsf/DocDetails.xsp?id=WDU19990600636`. Każdy link z `target="_blank"` ma `rel="noopener noreferrer"`. PDF checklisty wysyła `scenario_id` oraz pola planu. Plik `.ics` mówi „21 dni od daty porodu” albo „od daty przyjęcia dziecka”.
+4. **Weryfikator PDF** publikuje `pdfCase`. W karcie rozstrzygnięcia zostaje „Pobierz raport”. **Przenieś dane do kalkulatora i policz** jest na dolnym pasku, przełącza zakładkę, woła ten sam import co przycisk w formularzu i na 1,6 s podświetla przeniesione pola. Brak kwoty, daty albo nazwiska niczego nie wymyśla. Pusty skan po PyMuPDF i RapidOCR dostaje komunikat o braku warstwy, pewność 0 i kwotę „—”.
 5. **Panel stawek** w Strefie wsparcia zapisuje `legislation`. Kalkulator i termin 21 dni biorą stamtąd stawki i liczbę dni. Silnik w `engine.py` się nie zmienia.
 
-Na dole zakładek jest jeden następny krok: status → kalkulator, kalkulator → wnioski, weryfikator → kalkulator z przeniesieniem, wnioski → strefa wsparcia.
+Na dole zakładek jest jeden następny krok. Numer na pasku to numer celu w sensie przepływu, nie zawsze kolejny indeks nawigacji: status ma 02 i idzie do kalkulatora, kalkulator ma 03 i idzie do dokumentów, weryfikator ma 02 i wraca do kalkulatora z odczytanymi polami, dokumenty mają 05 i idą do strefy wsparcia. Górne zakładki numerów nie pokazują. Kolejność zakładek to status, kalkulator, dokumenty, weryfikator, wsparcie.
 
 ### 20.2. Macierz widoczności
 
@@ -1382,17 +1383,19 @@ Wiersz to wybór, kolumna to skutek na formularzu. Puste znaczy „bez zmiany wo
 | Poród | wiek w latach, L4, odroczenie | „Liczba dzieci przy jednym porodzie”, „Data porodu”, „Macierzyński”, wiek w miesiącach | urlopy w zwijanych sekcjach, wariant, ojcowski (poza opiekunem) |
 | Adopcja | urlop przed porodem, szpital, odroczenie, miesiące | „Data przyjęcia dziecka”, „Na warunkach macierzyńskiego”, skala „Przyjęcie” | wiek w latach, wariant, ojcowski poza opiekunem |
 | Piecza | urlop przed porodem, szpital, ojcowski, miesiące | data przyjęcia, urlop na warunkach macierzyńskiego | wiek w latach i odroczenie do 10 lat |
-| Ciąża L4 | liczba dzieci, urlopy, Za życiem, ojcowski, „matka nie może”, wariant, łączenie, oś rodziców | data to „Początek zwolnienia”, pasek chorobowy | L4, podpowiedź o 270 dniach, rehabilitacja |
-| Umowa o pracę | komunikat „płatnik zawsze ZUS” | select „Do 20 / Powyżej 20” i liczba ubezpieczonych | łączenie z pracą, zwinięte dopóki etat i tygodnie są 0 |
-| Zlecenie | łączenie z pracą | płatnik z progu 20, druk Z-3a gdy ZUS wypłaca | liczba ubezpieczonych, zadłużenie |
-| JDG | łączenie z pracą, select progu 20 | komunikat: zasiłek wypłaca ZUS, Z-3 nie jest wymagane | zadłużenie |
-| Ustanie | łączenie z pracą, select progu 20 | komunikat: ZUS, ZAM i dokument ustania | — |
+| Ciąża L4 | liczba dzieci, urlopy, Za życiem, ojcowski, „matka nie może”, wariant, łączenie, wykres rodziców | data to „Początek zwolnienia”, pasek chorobowy | L4, podpowiedź o 270 dniach, rehabilitacja |
+| Umowa o pracę | komunikat „płatnik zawsze ZUS”, zadłużenie | pole liczby ubezpieczonych i etat w umowie pod formą zatrudnienia | łączenie z pracą, zwinięte dopóki etat i tygodnie są 0 |
+| Zlecenie | łączenie z pracą, etat w umowie | płatnik z progu 20, druk Z-3a gdy ZUS wypłaca; notatka wymienia też ZAM, ZUR i ZAO | liczba ubezpieczonych, zadłużenie |
+| JDG | łączenie z pracą, etat w umowie, liczba ubezpieczonych | komunikat: zasiłek wypłaca ZUS, Z-3 nie jest wymagane, Z-3b zniesiono, zostają ZAM, ZUR i ZAO | zadłużenie |
+| Ustanie | łączenie z pracą, etat w umowie, liczba ubezpieczonych | komunikat: ZUS, ZAM, ZUR, ZAO i dokument ustania | — |
 | Rola ojciec | — | pola „Ojciec (wnioskodawca)” i „Matka dziecka”; we wniosku „Ubezpieczony” | przełącznik przekazania opieki przy porodzie |
 | Dwoje i więcej dzieci przy porodzie | — | nad polami szpitala zdanie o najniższej masie i najdłuższym pobycie | jeden komplet pól; silnik liczy wpisane liczby |
 
-Zwijane sekcje (`<details class="advanced">`): urlop przed porodem, hospitalizacja, łączenie z pracą. Zamknięte, gdy wartości są puste albo zerowe. Otwierają się same, gdy preset albo użytkownik ustawi wartość niezerową. Da się je złożyć ręcznie. Napis na pasku sekcji to „Pokaż” / „Ukryj”.
+Zwijane sekcje (`<details class="advanced">`): urlop przed porodem, hospitalizacja, ciąża L4 i łączenie z pracą. Zamknięte, gdy wartości są puste albo zerowe. Otwierają się same, gdy preset albo użytkownik ustawi wartość niezerową. Da się je złożyć ręcznie. Napis na pasku sekcji to „Pokaż” / „Ukryj”.
 
-Przy porodzie pod przełącznikiem matki jest zdanie, że urlop przed porodem zostaje przy niej, a blok po porodzie przejmuje ojciec. Pod skalą osi, poza ciążą, jest zdanie o ciągu i o 5 częściach. Przy 81,5% karta wymienia wyjątki 100% i 70%, a akapit pod wariantami mówi, że po terminie wybór 81,5% już nie przysługuje i że przełączenie zostaje ręczne. Na statusie kwota ze scenariusza jest podpisana „Przychód brutto (podstawa przed 13,71%)”. Karta ryzyka o poziomie ok ma przycisk „Sprawdź dokumenty i terminy” i otwiera wnioski. Pozostałe karty mają „Symuluj wpływ w kalkulatorze”. W strefie wsparcia „Zobacz przewodnik krok po kroku” otwiera wnioski, a karta „Za życiem” ma „Sprawdź należne świadczenia w kalkulatorze”. „Zarejestruj w PUE/eZUS” oraz „Deklaracja dostępności” i „BIP” są przyciskami makiety: mają `title` i kursor pomocy, bez `href`.
+Przełącznik matki nie ma pod sobą akapitu. Skutek widać na wykresie: blok po porodzie przechodzi do ojca, a „Przed porodem” zostaje przy matce. Pod skalą nie ma zdania o 5 częściach. Termin wariantu 81,5% jest na karcie wariantu i w nagłówku planu. Na statusie kwota ze scenariusza jest podpisana „Przychód brutto (podstawa przed 13,71%)”. Karta ryzyka o poziomie ok ma przycisk „Sprawdź dokumenty i terminy” i otwiera wnioski. Pozostałe karty mają „Symuluj wpływ w kalkulatorze”. W strefie wsparcia „Zobacz przewodnik krok po kroku” otwiera wnioski, a karta „Za życiem” ma „Sprawdź należne świadczenia w kalkulatorze”. „Zarejestruj w PUE/eZUS” oraz „Deklaracja dostępności” i „BIP” są przyciskami makiety: mają `title` i kursor pomocy, bez `href`.
+
+Baner na dokumentach, od 24.10.2026 r., mówi, że zniesiono wyłącznie Z-3b (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). ZAM zostaje wnioskiem o zasiłek macierzyński. Przy działalności, zleceniu i po ustaniu zatrudnienia urlop rodzicielski składa się na ZUR, a ojcowski na ZAO. To samo jest w notatce płatnika, w kroku checklisty i w PDF checklisty.
 
 ### 20.3. Czego świadomie nie ruszamy
 

@@ -159,6 +159,16 @@ class CalculatorInput(BaseModel):
     miesiace_rehabilitacji: int = 0
     rehabilitacja_w_ciazy: bool = True
     waiting_days: Optional[int] = None
+    wyjatek_wyczekiwania: str = ""
+    chorobowe_w_dniu_porodu: Optional[bool] = None
+    przerwa_przed_kodem_b: Optional[int] = None
+    wczesniejsze_dni_l4: int = 0
+    zgon_dziecka: bool = False
+    dzien_zycia_przy_zgonie: Optional[int] = None
+    dzieci_przy_zyciu: Optional[int] = None
+    miesiace_od_uprawomocnienia: Optional[float] = None
+    miesiace_podstawy: Optional[List[Dict[str, Any]]] = None
+    choroba_w_pierwszym_miesiacu: bool = False
     debt_amount: float = 0.0
     matka_nie_moze_opiekowac: bool = False
     include_paternity: bool = True

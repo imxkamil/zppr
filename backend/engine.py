@@ -34,7 +34,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             {"level": "warning", "badge": "DO SPRAWDZENIA", "title": "Ciągłość ubezpieczenia do porodu",
              "desc": "Rozwiązanie umowy przed dniem porodu może zmienić prawo do świadczeń. Wyjątki dotyczą m.in. upadłości lub likwidacji pracodawcy."},
             {"level": "info", "badge": "WAŻNE DLA JDG", "title": "Podstawa wymiaru świadczenia",
-             "desc": "ZUS lub płatnik uwzględni przeciętne wynagrodzenie z pełnych miesięcy ubezpieczenia poprzedzających niezdolność do pracy."},
+             "desc": "ZUS lub płatnik uwzględni przeciętne wynagrodzenie z pełnych miesięcy ubezpieczenia poprzedzających niezdolność. Miesiąc, w którym przepracowano mniej niż połowę czasu, wypada z podstawy. Pozorne zatrudnienie albo pozorne podwyższenie podstawy w ciąży może skończyć się odmową."},
             {"level": "ok", "badge": "OCHRONA AKTYWNA", "title": "Ochrona stosunku pracy",
              "desc": "W okresie ciąży i urlopu pracodawca co do zasady nie może wypowiedzieć ani rozwiązać umowy o pracę."}
         ]
@@ -68,7 +68,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             {"level": "warning", "badge": "PILNUJ TERMINÓW", "title": "Zadłużenie powyżej 1% płacy minimalnej",
              "desc": "Zaległość przekraczająca 1% minimalnego wynagrodzenia wstrzymuje wypłatę zasiłku do czasu pełnej spłaty."},
             {"level": "ok", "badge": "ZUS PŁATNIKIEM", "title": "Wniosek ZAM bezpośrednio do ZUS",
-             "desc": "Przy JDG składasz wyłącznie wniosek ZAM przez eZUS bez zaświadczenia Z-3."}
+             "desc": "Przy JDG składasz wniosek ZAM przez eZUS bez zaświadczenia Z-3. Art. 177 Kodeksu pracy (ochrona przed wypowiedzeniem) dotyczy umowy o pracę i nie obejmuje działalności."}
         ]
     },
     "zlecenie_no_waiting": {
@@ -98,7 +98,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             {"level": "ok", "badge": "WAŻNY WYJĄTEK", "title": "Zasiłek macierzyński bez okresu wyczekiwania",
              "desc": "Do zasiłku macierzyńskiego NIE obowiązuje 90-dniowy okres wyczekiwania — wystarczy podleganie ubezpieczeniu w dniu porodu."},
             {"level": "warning", "badge": "UWAGA NA L4", "title": "Brak prawa do zasiłku chorobowego przed porodem",
-             "desc": "Przed upływem 90 dni dobrowolnego ubezpieczenia zwolnienie lekarskie w ciąży będzie bezpłatne."},
+             "desc": "Przed upływem 90 dni dobrowolnego ubezpieczenia zwolnienie lekarskie w ciąży będzie bezpłatne, chyba że dotyczy absolwenta, 10 lat wcześniejszego obowiązkowego ubezpieczenia albo wypadku w drodze do pracy lub z pracy. Art. 177 Kodeksu pracy nie chroni zleceniobiorcy przed rozwiązaniem umowy."},
             {"level": "info", "badge": "DOKUMENT Z-3a", "title": "Wymagane zaświadczenie zleceniodawcy Z-3a",
              "desc": "Zleceniodawca musi przekazać do ZUS formularz Z-3a z podstawą składek."}
         ]
@@ -118,6 +118,7 @@ def _money(value: Decimal | float | int) -> float:
 BENEFIT_BASE_FLOOR = _money(MIN_WAGE_2026 * (1 - CONTRIBUTION_RATE))
 MAX_BENEFIT_BASE_2026 = _money(MAX_DECLARED_GROSS_2026 * (1 - CONTRIBUTION_RATE))
 PARENTAL_BENEFIT_FLOOR = 1000.00
+FUNERAL_BENEFIT_2026 = 7000.00
 PIT_ADVANCE = 0.12
 DEBT_LIMIT = _money(MIN_WAGE_2026 * Decimal("0.01"))
 MONTHS_PL = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec", "lipiec", "sierpień", "wrzesień", "październik", "listopad", "grudzień"]
@@ -198,10 +199,15 @@ def supplementary_weeks(
         return 0
     week = int(preg_week)
     days = 0 if hospital_days is None else int(hospital_days)
-    if week >= 37 and stay_from is not None and stay_to is not None:
+    term_window = week >= 37 and not (grams is not None and grams <= 1000)
+    if term_window and stay_from is not None and stay_to is not None:
         start = int(stay_from)
         end = int(stay_to)
-        days = max(0, min(end, 28) - max(start, 5) + 1) if end >= start else 0
+        # Pierwszy dzień pobytu musi wypaść między 5. a 28. dniem. Liczy się pobyt aż do końca 8. tygodnia (dzień 56).
+        if end < start or start < 5 or start > 28:
+            days = 0
+        else:
+            days = max(0, min(end, 56) - start + 1)
     if days <= 0:
         return 0
     counted = math.ceil(days / 7)
@@ -214,18 +220,52 @@ def supplementary_weeks(
     return 0
 
 
-def _standard_dimensions(law: Dict[str, Any], children: int, za_zyciem: bool) -> Tuple[int, int]:
+def _standard_dimensions(law: Dict[str, Any], children: int, za_zyciem: bool, event: str = "porod") -> Tuple[int, int]:
     maternity_base = int(law["maternity_weeks_single"])
     shift = maternity_base - 20
     maternity_map = {1: maternity_base, 2: 31 + shift, 3: 33 + shift, 4: 35 + shift, 5: 37 + shift}
     maternity = max(1, maternity_map.get(children, maternity_base))
     parental_base = int(law["parental_weeks_single"])
     parental_shift = parental_base - 41
-    if za_zyciem:
+    if za_zyciem and event in ("adopcja", "piecza"):
+        parental = 62 + parental_shift
+    elif za_zyciem:
         parental = (65 if children == 1 else 67) + parental_shift
     else:
         parental = parental_base if children == 1 else parental_base + 2
     return maternity, max(1, parental)
+
+
+def death_leave_days(age_days: int) -> int:
+    """Art. 180¹ KP. Przed 8. tygodniem życia: 8 tygodni po porodzie, nie krócej niż 7 dni od zgonu. Później: 7 dni od zgonu."""
+    age = max(0, int(age_days))
+    if age < 56:
+        return max(56, age + 7)
+    return age + 7
+
+
+def declared_from_months(months: Any) -> Optional[float]:
+    """Art. 36–38 ustawy zasiłkowej. Miesiąc z przepracowaną co najmniej połową czasu wchodzi do średniej i jest uzupełniany. Miesiąc poniżej połowy wypada."""
+    if not isinstance(months, list) or not months:
+        return None
+    completed: List[float] = []
+    for item in months:
+        if not isinstance(item, dict):
+            continue
+        gross = _finite(item.get("brutto"), 0)
+        due = _finite(item.get("dni_do_przepracowania"), 0)
+        worked = _finite(item.get("dni_przepracowane"), 0)
+        if due <= 0 or gross < 0:
+            continue
+        if worked < due * 0.5:
+            continue
+        if worked >= due:
+            completed.append(gross)
+        elif worked > 0:
+            completed.append(gross / worked * due)
+    if not completed:
+        return None
+    return sum(completed) / len(completed)
 
 
 def _parental_cap(children: int, za_zyciem: bool) -> int:
@@ -295,17 +335,17 @@ def _payer(employment: str, insured_count: int) -> Dict[str, Any]:
     count = max(0, insured_count)
     zus = employment in ("jdg", "ustanie") or count <= 20
     if employment == "jdg":
-        forms = ["ZAM do ZUS"]
-        note = "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zlikwidowany 24.10.2026 r."
+        forms = ["ZAM do ZUS", "ZUR", "ZAO"]
+        note = "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b zniesiono 24.10.2026 r. (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
         title = "ZUS"
     elif employment == "ustanie":
-        forms = ["ZAM", "Dokument potwierdzający ustanie zatrudnienia"]
-        note = "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS."
+        forms = ["ZAM", "ZUR", "ZAO", "Dokument potwierdzający ustanie zatrudnienia"]
+        note = "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS. Zasiłek macierzyński: ZAM i dokument ustania. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
         title = "ZUS"
     elif employment == "zlecenie":
-        forms = ["Z-3a"] if zus else []
+        forms = ["Z-3a", "ZAM", "ZUR", "ZAO"] if zus else ["ZAM", "ZUR", "ZAO"]
         title = "ZUS" if zus else "Zleceniodawca"
-        note = "Zleceniodawca zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po Z-3a." if zus else "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek."
+        note = "Zleceniodawca zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po Z-3a. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO." if zus else "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
     else:
         forms = ["Z-3"] if zus else []
         title = "ZUS" if zus else "Pracodawca"
@@ -392,9 +432,17 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     insured_count = int(round(_finite(payload.get("liczba_ubezpieczonych", 21), 21)))
     payer = _payer(employment, insured_count)
     contract_fte = _optional_number(payload.get("wymiar_etatu"))
-    declared, basis = _benefit_basis(employment, _finite(payload.get("base_salary_gross", 0), 0), notes, 1.0 if contract_fte is None else contract_fte)
+    gross_input = _finite(payload.get("base_salary_gross", 0), 0)
+    averaged = declared_from_months(payload.get("miesiace_podstawy"))
+    if averaged is not None:
+        gross_input = averaged
+        notes.append("Podstawę przyjęto jako średnią miesięcy, w których przepracowano co najmniej połowę czasu. Miesiąc poniżej 50% został wyłączony, a niepełny miesiąc powyżej progu uzupełniono do pełnego.")
+    elif payload.get("choroba_w_pierwszym_miesiacu"):
+        notes.append("Niezdolność zaczyna się w pierwszym miesiącu ubezpieczenia. Podstawa to wynagrodzenie z umowy za pełny miesiąc, a nie wypłata za kilka przepracowanych dni.")
+    declared, basis = _benefit_basis(employment, gross_input, notes, 1.0 if contract_fte is None else contract_fte)
     debt = _finite(payload.get("debt_amount", 0), 0)
     waiting = _optional_number(payload.get("waiting_days"))
+    waiting_exception = str(payload.get("wyjatek_wyczekiwania") or "").strip().lower()
     entitled = True
     denial = ""
 
@@ -406,9 +454,25 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     if employment in ("jdg", "zlecenie") and debt > DEBT_LIMIT:
         entitled = False
         denial = f"Zadłużenie {debt:.2f} zł przekracza 1% minimalnego wynagrodzenia ({DEBT_LIMIT:.2f} zł). Art. 2a ustawy zasiłkowej wstrzymuje prawo do zasiłku do czasu spłaty."
-    if event == "ciaza_l4" and employment in ("jdg", "zlecenie") and waiting is not None and waiting < 90:
+    if event != "ciaza_l4" and employment in ("jdg", "zlecenie") and payload.get("chorobowe_w_dniu_porodu") is False:
         entitled = False
-        denial = "Do zasiłku chorobowego przy dobrowolnym ubezpieczeniu potrzeba 90 dni podlegania. Zasiłek macierzyński tego wyczekiwania nie wymaga."
+        denial = "Brak dobrowolnego ubezpieczenia chorobowego w dniu porodu. Zasiłek macierzyński wymaga podlegania temu ubezpieczeniu w tym dniu."
+    exception_labels = {
+        "absolwent": "absolwent, który przystąpił do ubezpieczenia w ciągu 90 dni od ukończenia szkoły",
+        "10_lat": "10 lat wcześniejszego obowiązkowego ubezpieczenia",
+        "wypadek": "wypadek w drodze do pracy albo z pracy",
+    }
+    if event == "ciaza_l4" and waiting is not None and waiting_exception not in exception_labels:
+        if employment == "uop" and waiting < 30:
+            entitled = False
+            denial = "Do zasiłku chorobowego przy obowiązkowym ubezpieczeniu potrzeba 30 dni podlegania. Wyjątki: absolwent w ciągu 90 dni od szkoły, 10 lat wcześniejszego obowiązkowego ubezpieczenia albo wypadek w drodze do pracy lub z pracy."
+        if employment in ("jdg", "zlecenie") and waiting < 90:
+            entitled = False
+            denial = "Do zasiłku chorobowego przy dobrowolnym ubezpieczeniu potrzeba 90 dni podlegania. Zasiłek macierzyński tego wyczekiwania nie wymaga. Wyjątki: absolwent, 10 lat wcześniejszego obowiązkowego ubezpieczenia albo wypadek w drodze do pracy lub z pracy."
+    elif event == "ciaza_l4" and waiting_exception in exception_labels:
+        notes.append(f"Okres wyczekiwania nie obowiązuje: {exception_labels[waiting_exception]}.")
+    if employment == "ustanie":
+        notes.append("Po upadłości, likwidacji albo śmierci pracodawcy oraz po rozwiązaniu umowy z naruszeniem prawa potwierdzonym wyrokiem zasiłek do dnia porodu wypłaca ZUS w wysokości zasiłku macierzyńskiego. Umowa na czas określony i okres próbny dłuższy niż miesiąc przedłuża się do dnia porodu (art. 177 § 3 KP).")
 
     rate_full = 1.0
     rate_maternity = float(law["rate_single_variant"]) / 100.0 if variant == "81.5" else float(law["rate_maternity"]) / 100.0
@@ -431,9 +495,22 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     paternity_weeks = 0
     parental_cap = _parental_cap(children, za_zyciem)
     pregnancy: Dict[str, Any] = {}
+    funeral_benefit = None
 
     if event == "ciaza_l4":
         sick_days = max(0, int(round(_finite(payload.get("dni_niezdolnosci", 0), 0))))
+        prior_sick = max(0, int(round(_finite(payload.get("wczesniejsze_dni_l4", 0), 0))))
+        gap = _optional_number(payload.get("przerwa_przed_kodem_b"))
+        period_reset = False
+        if gap is not None and gap < 61:
+            period_reset = True
+            notes.append("Przerwa krótsza niż 61 dni, po której przychodzi zwolnienie z kodem B w ciąży, zeruje licznik okresu zasiłkowego. Do 270 dni wchodzi tylko bieżące zwolnienie.")
+        elif gap is not None:
+            period_reset = True
+            notes.append("Przerwa co najmniej 61 dni otwiera nowy okres zasiłkowy. Wcześniejsze dni L4 nie sumują się z bieżącym zwolnieniem.")
+        elif prior_sick:
+            sick_days += prior_sick
+            notes.append("Bez przerwy wcześniejsze dni zwolnienia doliczono do bieżącego okresu zasiłkowego.")
         age = _optional_number(payload.get("wiek_ubezpieczonego"))
         employer_cap = 0
         if employment == "uop":
@@ -481,6 +558,7 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "rehab_days": rehab_days,
             "limit_days": 270,
             "rehab_in_pregnancy": still_pregnant,
+            "okres_wyzerowany": period_reset,
         }
         notes.append("Urlop ojcowski nie wchodzi w okres ciąży i zwolnienia lekarskiego.")
         display_rate = rate_full
@@ -489,7 +567,7 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         total_weeks = total_days // 7
         extra_day_count = total_days % 7
     else:
-        maternity, parental = _standard_dimensions(law, children, za_zyciem)
+        maternity, parental = _standard_dimensions(law, children, za_zyciem, event)
         age_years = _optional_number(payload.get("wiek_dziecka_lata"))
         maternity, parental = _apply_age_cap(event, maternity, parental, za_zyciem, age_years, bool(payload.get("odroczenie_obowiazku_szkolnego")), notes)
         if event == "porod":
@@ -542,12 +620,60 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         elif paternity_weeks and event == "porod" and age_months is not None and age_months >= 12:
             paternity_weeks = 0
             notes.append("Urlop ojcowski wygasa z ukończeniem przez dziecko 12 miesięcy.")
-        elif paternity_weeks and event == "adopcja" and age_years is not None and age_years >= 14:
-            paternity_weeks = 0
-            notes.append("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.")
+        elif paternity_weeks and event == "adopcja":
+            months_final = _optional_number(payload.get("miesiace_od_uprawomocnienia"))
+            if age_years is not None and age_years >= 14:
+                paternity_weeks = 0
+                notes.append("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.")
+            elif months_final is not None and months_final >= 12:
+                paternity_weeks = 0
+                notes.append("Urlop ojcowski przy adopcji wygasa po 12 miesiącach od uprawomocnienia przysposobienia.")
         elif paternity_weeks and maternity == 0 and parental == 0:
             paternity_weeks = 0
             notes.append("Urlop ojcowski nie przysługuje, bo urlop na warunkach macierzyńskiego i rodzicielski już nie przysługują.")
+
+        child_died = event == "porod" and bool(payload.get("zgon_dziecka"))
+        funeral_benefit = FUNERAL_BENEFIT_2026 if child_died else None
+        post_days = post_weeks * 7
+        if child_died:
+            notes.append("Zasiłek pogrzebowy wynosi 7 000 zł. Wniosek Z-12 składa się w ciągu 12 miesięcy od dnia zgonu albo urodzenia martwego.")
+            surviving = _optional_number(payload.get("dzieci_przy_zyciu"))
+            alive = 0 if surviving is None else max(0, int(surviving))
+            if alive > 0:
+                children = min(5, alive)
+                maternity, parental = _standard_dimensions(law, children, za_zyciem, event)
+                maternity, parental = _apply_age_cap(event, maternity, parental, za_zyciem, age_years, bool(payload.get("odroczenie_obowiazku_szkolnego")), notes)
+                pre_weeks = min(pre_weeks, maternity)
+                post_weeks = max(0, maternity - pre_weeks)
+                post_days = post_weeks * 7
+                father_exclusive = min(9, parental)
+                mother_parental = max(0, parental - father_exclusive)
+                parental_cap = _parental_cap(children, za_zyciem)
+                notes.append("Przy ciąży mnogiej wymiar świadczenia ustala się według liczby dzieci pozostałych przy życiu.")
+            else:
+                age_at_death = _optional_number(payload.get("dzien_zycia_przy_zgonie"))
+                post_days = death_leave_days(0 if age_at_death is None else int(age_at_death))
+                post_weeks = post_days // 7
+                pre_weeks = 0
+                extra_weeks = 0
+                parental = 0
+                father_exclusive = 0
+                mother_parental = 0
+                paternity_weeks = 0
+                notes.append("Gdy dziecko urodziło się martwe albo zmarło przed ukończeniem 8 tygodni, zasiłek obejmuje 8 tygodni po porodzie i nie może być krótszy niż 7 dni od zgonu. Po 8. tygodniu życia przysługuje 7 dni od zgonu. Urlop rodzicielski i ojcowski nie wchodzą, gdy żadne dziecko nie zostało przy życiu.")
+            owner_pool = mother_parental if role != "ojciec" else father_exclusive
+            combine = 0.0
+            if etat > 0:
+                combine = owner_pool if combine_input is None else min(owner_pool, max(0.0, combine_input))
+            raw_extra = min(combine * etat, max(0.0, parental_cap - parental))
+            extension_total_days = int(math.floor(raw_extra * 7))
+            extension_weeks = extension_total_days // 7
+            extension_days = extension_total_days % 7
+            full_parental_rate = rate_parental_own if role != "ojciec" else rate_parental_other
+            reduced_rate = full_parental_rate * (1 - etat)
+            owner_days = int(round(owner_pool * 7))
+            reduced_total_days = int(round(combine * 7))
+            full_owner_days = max(0, owner_days - reduced_total_days)
 
         care_parent = father if special else mother
         cursor = anchor
@@ -557,10 +683,18 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             pre_seg = _segment(pre_start, pre_weeks * 7, mother, "Urlop przed porodem", rate_full, basis_for_pay)
             if pre_seg:
                 segments.append(pre_seg)
-        if post_weeks:
-            pieces.append((post_weeks * 7, care_parent, "Zasiłek macierzyński", rate_maternity))
+        if post_days:
+            if special and post_days > 0:
+                kept = min(56, post_days)
+                rest = post_days - kept
+                if kept:
+                    pieces.append((kept, mother, "Zasiłek macierzyński", rate_maternity))
+                if rest:
+                    pieces.append((rest, father, "Zasiłek macierzyński", rate_maternity))
+            else:
+                pieces.append((post_days, care_parent, "Zasiłek macierzyński", rate_maternity))
         if extra_weeks:
-            pieces.append((extra_weeks * 7, care_parent, "Uzupełniający urlop macierzyński", rate_full))
+            pieces.append((extra_weeks * 7, father if special else care_parent, "Uzupełniający urlop macierzyński", rate_full))
         if role == "ojciec":
             if full_owner_days:
                 pieces.append((full_owner_days, father, "Urlop rodzicielski ojca", rate_parental_other))
@@ -589,13 +723,15 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             if pat:
                 segments.append(pat)
         if special:
-            notes.append("Urlop przed porodem zostaje przy matce. Zasiłek po porodzie i uzupełniający urlop przejmuje ojciec, bo matka nie może sprawować opieki.")
+            notes.append("Urlop przed porodem zostaje przy matce. Matka zachowuje 8 tygodni po porodzie, bo nie może sprawować opieki (szpital albo orzeczenie o niezdolności do samodzielnej egzystencji). Dalszy zasiłek i urlop uzupełniający przejmuje ojciec.")
         else:
-            notes.append("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki.")
+            notes.append("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki. Wtedy wystarcza 8 tygodni.")
+        if paternity_weeks:
+            notes.append("Urlop ojcowski to 14 dni kalendarzowych: jednorazowo albo w dwóch częściach po co najmniej 7 dni. Przy urodzeniu trwa do ukończenia 12. miesiąca życia, a przy adopcji 12 miesięcy od uprawomocnienia i nie dłużej niż do 14. roku życia.")
         notes.append("9 tygodni rodzicielskiego drugiego rodzica jest liczone po 70% i nie wchodzi w uśrednienie 81,5%.")
         display_rate = rate_maternity
-        monthly_gross, monthly_net, uplift = _monthly_amount(basis_for_pay, rate_maternity if post_weeks or pre_weeks else rate_parental_own)
-        total_days = (pre_weeks + post_weeks + extra_weeks + parental) * 7 + extension_weeks * 7 + extension_days + paternity_weeks * 7
+        monthly_gross, monthly_net, uplift = _monthly_amount(basis_for_pay, rate_maternity if post_days or pre_weeks else rate_parental_own)
+        total_days = pre_weeks * 7 + post_days + extra_weeks * 7 + parental * 7 + extension_weeks * 7 + extension_days + paternity_weeks * 7
         total_weeks = total_days // 7
         extra_day_count = total_days % 7
 
@@ -627,6 +763,7 @@ def calculate_benefit_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         "parents": {"mother": mother, "father": father, "role": role},
         "notes": notes,
         "pregnancy": pregnancy,
+        "funeral_benefit": funeral_benefit,
         "breakdown": {
             "maternity_weeks": post_weeks,
             "pre_birth_weeks": pre_weeks,

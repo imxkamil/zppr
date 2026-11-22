@@ -88,6 +88,14 @@ export type CalculatorInput = {
   miesiace_rehabilitacji?: number;
   rehabilitacja_w_ciazy?: boolean;
   waiting_days?: number | null;
+  wyjatek_wyczekiwania?: string;
+  chorobowe_w_dniu_porodu?: boolean;
+  przerwa_przed_kodem_b?: number | null;
+  wczesniejsze_dni_l4?: number;
+  zgon_dziecka?: boolean;
+  dzien_zycia_przy_zgonie?: number | null;
+  dzieci_przy_zyciu?: number | null;
+  miesiace_od_uprawomocnienia?: number | null;
   debt_amount?: number;
   matka_nie_moze_opiekowac?: boolean;
   include_paternity?: boolean;
@@ -236,12 +244,13 @@ function optionalNumber(value: number | null | undefined) {
 export function supplementaryWeeks(week: number | null, grams: number | null, days: number | null, stayFrom: number | null = null, stayTo: number | null = null) {
   if (week == null) return 0;
   let countedDays = days ?? 0;
-  if (week >= 37 && stayFrom != null && stayTo != null) {
-    countedDays = stayTo >= stayFrom ? Math.max(0, Math.min(stayTo, 28) - Math.max(stayFrom, 5) + 1) : 0;
+  const lowWeight = grams != null && grams <= 1000;
+  if (week >= 37 && !lowWeight && stayFrom != null && stayTo != null) {
+    countedDays = stayTo >= stayFrom && stayFrom >= 5 && stayFrom <= 28 ? Math.max(0, Math.min(stayTo, 56) - stayFrom + 1) : 0;
   }
   if (countedDays <= 0) return 0;
   const counted = Math.ceil(countedDays / 7);
-  if (week < 28 || (grams != null && grams <= 1000)) return Math.min(15, counted);
+  if (week < 28 || lowWeight) return Math.min(15, counted);
   if (week >= 28 && week <= 36) return Math.min(8, counted);
   if (week >= 37 && countedDays >= 2) return Math.min(8, counted);
   return 0;
@@ -265,17 +274,17 @@ function localPayer(employment: string, insured: number): NonNullable<BenefitPla
   const count = Math.max(0, Math.round(insured));
   const zus = employment === "jdg" || employment === "ustanie" || count <= 20;
   if (employment === "jdg") {
-    return { title: "ZUS", is_zus: true, required_forms: ["ZAM do ZUS"], note: "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zlikwidowany 24.10.2026 r.", insured_count: count };
+    return { title: "ZUS", is_zus: true, required_forms: ["ZAM do ZUS", "ZUR", "ZAO"], note: "Przy działalności zasiłek wypłaca ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b zniesiono 24.10.2026 r. (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", insured_count: count };
   }
   if (employment === "ustanie") {
-    return { title: "ZUS", is_zus: true, required_forms: ["ZAM", "Dokument potwierdzający ustanie zatrudnienia"], note: "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS.", insured_count: count };
+    return { title: "ZUS", is_zus: true, required_forms: ["ZAM", "ZUR", "ZAO", "Dokument potwierdzający ustanie zatrudnienia"], note: "Po ustaniu ubezpieczenia z powodu upadłości lub likwidacji zasiłek wypłaca ZUS. Zasiłek macierzyński: ZAM i dokument ustania. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", insured_count: count };
   }
   if (employment === "zlecenie") {
     return {
       title: zus ? "ZUS" : "Zleceniodawca",
       is_zus: zus,
-      required_forms: zus ? ["Z-3a"] : [],
-      note: zus ? "Zleceniodawca zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po Z-3a." : "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.",
+      required_forms: zus ? ["Z-3a", "ZAM", "ZUR", "ZAO"] : ["ZAM", "ZUR", "ZAO"],
+      note: zus ? "Zleceniodawca zgłasza nie więcej niż 20 ubezpieczonych, więc zasiłek wypłaca ZUS po Z-3a. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO." : "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.",
       insured_count: count,
     };
   }
@@ -322,9 +331,21 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     denial = `Zadłużenie przekracza 1% minimalnego wynagrodzenia (${DEBT_LIMIT.toFixed(2)} zł).`;
   }
   const waiting = optionalNumber(payload.waiting_days);
-  if (event === "ciaza_l4" && (employment === "jdg" || employment === "zlecenie") && waiting != null && waiting < 90) {
+  const waitingException = payload.wyjatek_wyczekiwania || "";
+  const exceptionKnown = waitingException === "absolwent" || waitingException === "10_lat" || waitingException === "wypadek";
+  if (event !== "ciaza_l4" && (employment === "jdg" || employment === "zlecenie") && payload.chorobowe_w_dniu_porodu === false) {
     entitled = false;
-    denial = "Do zasiłku chorobowego przy dobrowolnym ubezpieczeniu potrzeba 90 dni podlegania.";
+    denial = "Brak dobrowolnego ubezpieczenia chorobowego w dniu porodu. Zasiłek macierzyński wymaga podlegania temu ubezpieczeniu w tym dniu.";
+  }
+  if (event === "ciaza_l4" && waiting != null && !exceptionKnown) {
+    if (employment === "uop" && waiting < 30) {
+      entitled = false;
+      denial = "Do zasiłku chorobowego przy obowiązkowym ubezpieczeniu potrzeba 30 dni podlegania.";
+    }
+    if ((employment === "jdg" || employment === "zlecenie") && waiting < 90) {
+      entitled = false;
+      denial = "Do zasiłku chorobowego przy dobrowolnym ubezpieczeniu potrzeba 90 dni podlegania.";
+    }
   }
   const payBasis = entitled ? basis : 0;
   const rateFull = 1;
@@ -337,7 +358,7 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
   let maternity = Math.max(1, maternityMap[children] ?? maternityBase);
   const parentalBase = finite(Number(law.parental_weeks_single), 41);
   const parentalShift = parentalBase - 41;
-  let parental = Math.max(1, zaZyciem ? (children === 1 ? 65 : 67) + parentalShift : children === 1 ? parentalBase : parentalBase + 2);
+  let parental = Math.max(1, zaZyciem && (event === "adopcja" || event === "piecza") ? 62 + parentalShift : zaZyciem ? (children === 1 ? 65 : 67) + parentalShift : children === 1 ? parentalBase : parentalBase + 2);
   const ageYears = optionalNumber(payload.wiek_dziecka_lata);
   if (event === "adopcja" || event === "piecza") {
     const limit = event === "adopcja" ? 14 : payload.odroczenie_obowiazku_szkolnego ? 10 : 7;
@@ -377,8 +398,8 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     parental = 0;
     extraWeeks = 0;
   }
-  const fatherExclusive = Math.min(9, parental);
-  const motherParental = Math.max(0, parental - fatherExclusive);
+  let fatherExclusive = Math.min(9, parental);
+  let motherParental = Math.max(0, parental - fatherExclusive);
   let etat = optionalNumber(payload.etat_pracy);
   if (etat == null) {
     const legacy = finite(Number(payload.work_share), 0);
@@ -403,9 +424,15 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
   } else if (paternity && event === "porod" && ageMonths != null && ageMonths >= 12) {
     paternity = 0;
     notes.push("Urlop ojcowski wygasa z ukończeniem przez dziecko 12 miesięcy.");
-  } else if (paternity && event === "adopcja" && ageYears != null && ageYears >= 14) {
-    paternity = 0;
-    notes.push("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.");
+  } else if (paternity && event === "adopcja") {
+    const monthsFinal = optionalNumber(payload.miesiace_od_uprawomocnienia);
+    if (ageYears != null && ageYears >= 14) {
+      paternity = 0;
+      notes.push("Urlop ojcowski wygasa z ukończeniem przez dziecko 14 lat przy adopcji.");
+    } else if (monthsFinal != null && monthsFinal >= 12) {
+      paternity = 0;
+      notes.push("Urlop ojcowski przy adopcji wygasa po 12 miesiącach od uprawomocnienia przysposobienia.");
+    }
   } else if (paternity && maternity + parental === 0) {
     paternity = 0;
     notes.push("Urlop ojcowski nie przysługuje, bo urlop na warunkach macierzyńskiego i rodzicielski już nie przysługują.");
@@ -414,12 +441,36 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     notes.push("Urlop ojcowski nie wchodzi w okres ciąży i zwolnienia lekarskiego.");
     paternity = 0;
   }
+  let postDays = postWeeks * 7;
+  let shownPostWeeks = postWeeks;
+  let shownPre = preWeeks;
+  let shownExtra = extraWeeks;
+  let shownParental = parental;
+  if (event === "porod" && payload.zgon_dziecka) {
+    notes.push("Zasiłek pogrzebowy wynosi 7 000 zł. Wniosek Z-12 składa się w ciągu 12 miesięcy od dnia zgonu albo urodzenia martwego.");
+    const alive = payload.dzieci_przy_zyciu == null ? 0 : Math.max(0, Math.round(payload.dzieci_przy_zyciu));
+    if (alive <= 0) {
+      const ageAtDeath = optionalNumber(payload.dzien_zycia_przy_zgonie) ?? 0;
+      postDays = ageAtDeath < 56 ? Math.max(56, ageAtDeath + 7) : ageAtDeath + 7;
+      shownPostWeeks = Math.floor(postDays / 7);
+      shownPre = 0;
+      shownExtra = 0;
+      shownParental = 0;
+      fatherExclusive = 0;
+      motherParental = 0;
+      paternity = 0;
+      notes.push("Gdy dziecko urodziło się martwe albo zmarło przed ukończeniem 8 tygodni, zasiłek obejmuje 8 tygodni po porodzie i nie może być krótszy niż 7 dni od zgonu. Po 8. tygodniu życia przysługuje 7 dni od zgonu.");
+    }
+  }
   const insured = Math.round(finite(Number(payload.liczba_ubezpieczonych), 21));
   const payer = localPayer(employment, insured);
   const ageBlocked = (event === "adopcja" || event === "piecza") && preWeeks === 0 && postWeeks === 0 && parental === 0;
   const main = ageBlocked ? { gross: 0, net: 0, uplift: false } : monthlyAmount(payBasis, event === "ciaza_l4" ? rateFull : rateMaternity);
   let upliftApplied = main.uplift;
-  const rawSickDays = Math.max(0, Math.round(finite(Number(payload.dni_niezdolnosci), 0)));
+  const rawSickInput = Math.max(0, Math.round(finite(Number(payload.dni_niezdolnosci), 0)));
+  const gapBeforeCode = optionalNumber(payload.przerwa_przed_kodem_b);
+  const priorSick = Math.max(0, Math.round(finite(Number(payload.wczesniejsze_dni_l4), 0)));
+  const rawSickDays = event === "ciaza_l4" && gapBeforeCode == null && priorSick ? rawSickInput + priorSick : rawSickInput;
   const sickDays = Math.min(270, rawSickDays);
   const age = optionalNumber(payload.wiek_ubezpieczonego);
   if (event === "ciaza_l4" && employment === "uop" && age == null) {
@@ -430,9 +481,10 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
   const rehabDays = event === "ciaza_l4" && sickDays >= 270
     ? Math.min(365, rehabMonths > 0 ? rehabMonths * 30 : Math.max(0, rawSickDays - 270))
     : 0;
+  const extensionForPlan = shownParental === 0 && payload.zgon_dziecka ? 0 : extensionDaysTotal;
   const totalDays = event === "ciaza_l4"
     ? sickDays + rehabDays
-    : (preWeeks + postWeeks + extraWeeks + parental) * 7 + extensionDaysTotal + paternity * 7;
+    : shownPre * 7 + postDays + shownExtra * 7 + shownParental * 7 + extensionForPlan + paternity * 7;
   const schedule: BenefitPlan["schedule"] = [];
   if (entitled && dueDate && payBasis > 0 && event === "ciaza_l4") {
     const [year, month, day] = dueDate.split("-").map(Number);
@@ -455,12 +507,20 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     }
   } else if (entitled && dueDate && payBasis > 0 && event !== "ciaza_l4") {
     const care = payload.matka_nie_moze_opiekowac ? father : mother;
-    if (payload.matka_nie_moze_opiekowac) notes.push("Urlop przed porodem zostaje przy matce. Zasiłek po porodzie i uzupełniający urlop przejmuje ojciec, bo matka nie może sprawować opieki.");
-    else if (event !== "ciaza_l4") notes.push("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki.");
+    if (payload.matka_nie_moze_opiekowac) notes.push("Urlop przed porodem zostaje przy matce. Matka zachowuje 8 tygodni po porodzie, bo nie może sprawować opieki (szpital albo orzeczenie o niezdolności do samodzielnej egzystencji). Dalszy zasiłek i urlop uzupełniający przejmuje ojciec.");
+    else if (event !== "ciaza_l4") notes.push("Pierwsze 14 tygodni macierzyńskiego po porodzie wykorzystuje matka, chyba że nie może sprawować opieki. Wtedy wystarcza 8 tygodni.");
     if (event !== "ciaza_l4") notes.push("9 tygodni rodzicielskiego drugiego rodzica jest liczone po 70% i nie wchodzi w uśrednienie 81,5%.");
     const chunks: { days: number; parent: string; kind: string; rate: number }[] = [];
-    if (postWeeks) chunks.push({ days: postWeeks * 7, parent: care, kind: "Zasiłek macierzyński", rate: rateMaternity });
-    if (extraWeeks) chunks.push({ days: extraWeeks * 7, parent: care, kind: "Uzupełniający urlop macierzyński", rate: rateFull });
+    if (postDays) {
+      if (payload.matka_nie_moze_opiekowac) {
+        const kept = Math.min(56, postDays);
+        if (kept) chunks.push({ days: kept, parent: mother, kind: "Zasiłek macierzyński", rate: rateMaternity });
+        if (postDays - kept) chunks.push({ days: postDays - kept, parent: father, kind: "Zasiłek macierzyński", rate: rateMaternity });
+      } else {
+        chunks.push({ days: postDays, parent: care, kind: "Zasiłek macierzyński", rate: rateMaternity });
+      }
+    }
+    if (shownExtra) chunks.push({ days: shownExtra * 7, parent: payload.matka_nie_moze_opiekowac ? father : care, kind: "Uzupełniający urlop macierzyński", rate: rateFull });
     const fullParentalRate = role === "ojciec" ? rateOther : rateOwn;
     const reducedRate = fullParentalRate * (1 - etat);
     const ownerDays = Math.round(ownerPool * 7);
@@ -469,20 +529,20 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     if (role === "ojciec") {
       if (fullDays) chunks.push({ days: fullDays, parent: father, kind: "Urlop rodzicielski ojca", rate: rateOther });
       if (reducedDays) chunks.push({ days: reducedDays, parent: father, kind: "Rodzicielski łączony z pracą", rate: reducedRate });
-      if (extensionDaysTotal) chunks.push({ days: extensionDaysTotal, parent: father, kind: "Wydłużenie za pracę", rate: fullParentalRate });
+      if (extensionForPlan) chunks.push({ days: extensionForPlan, parent: father, kind: "Wydłużenie za pracę", rate: fullParentalRate });
       if (motherParental) chunks.push({ days: motherParental * 7, parent: mother, kind: "Urlop rodzicielski matki", rate: rateOwn });
     } else {
       if (fullDays) chunks.push({ days: fullDays, parent: mother, kind: "Urlop rodzicielski", rate: rateOwn });
       if (reducedDays) chunks.push({ days: reducedDays, parent: mother, kind: "Rodzicielski łączony z pracą", rate: reducedRate });
-      if (extensionDaysTotal) chunks.push({ days: extensionDaysTotal, parent: mother, kind: "Wydłużenie za pracę", rate: fullParentalRate });
+      if (extensionForPlan) chunks.push({ days: extensionForPlan, parent: mother, kind: "Wydłużenie za pracę", rate: fullParentalRate });
       if (fatherExclusive) chunks.push({ days: fatherExclusive * 7, parent: father, kind: "9 tyg. wyłącznie dla drugiego rodzica", rate: rateOther });
     }
     const [year, month, day] = dueDate.split("-").map(Number);
     let cursor = new Date(year, month - 1, day);
-    if (preWeeks) {
+    if (shownPre) {
       const preStart = new Date(cursor);
-      preStart.setDate(preStart.getDate() - preWeeks * 7);
-      pushChunk(schedule, preStart, preWeeks * 7, mother, "Urlop przed porodem", rateFull, payBasis);
+      preStart.setDate(preStart.getDate() - shownPre * 7);
+      pushChunk(schedule, preStart, shownPre * 7, mother, "Urlop przed porodem", rateFull, payBasis);
     }
     chunks.forEach((chunk) => {
       pushChunk(schedule, cursor, chunk.days, chunk.parent, chunk.kind, chunk.rate, payBasis);
@@ -508,14 +568,14 @@ export function calculateLocally(payload: CalculatorInput, law: LegislationParam
     notes,
     pregnancy: event === "ciaza_l4" ? { sick_days_paid: sickDays, employer_days: employerDays, zus_sick_days: sickDays - employerDays, rehab_days: rehabDays, limit_days: 270, rehab_in_pregnancy: payload.rehabilitacja_w_ciazy !== false } : undefined,
     breakdown: {
-      maternity_weeks: postWeeks,
-      pre_birth_weeks: preWeeks,
+      maternity_weeks: shownPostWeeks,
+      pre_birth_weeks: shownPre,
       parental_weeks_mother: motherParental,
       parental_weeks_father_exclusive: fatherExclusive,
       paternity_weeks: paternity,
-      premature_weeks: extraWeeks,
-      extension_weeks: Math.floor(extensionDaysTotal / 7),
-      extension_days: extensionDaysTotal % 7,
+      premature_weeks: shownExtra,
+      extension_weeks: Math.floor(extensionForPlan / 7),
+      extension_days: extensionForPlan % 7,
       parental_cap: cap,
     },
     deadline_21_days: dueDate ? addDaysIso(dueDate, Math.max(1, finite(Number(law.deadline_days_81_5), 21))) : "",
@@ -552,7 +612,7 @@ export const FALLBACK_SCENARIOS: Scenario[] = [
     base_salary_gross: 8200,
     risks: [
       { level: "warning", badge: "DO SPRAWDZENIA", title: "Ciągłość ubezpieczenia do porodu", desc: "Rozwiązanie umowy przed dniem porodu może zmienić prawo do świadczeń. Wyjątki dotyczą m.in. upadłości lub likwidacji pracodawcy." },
-      { level: "info", badge: "WAŻNE DLA JDG", title: "Podstawa wymiaru świadczenia", desc: "ZUS lub płatnik uwzględni przeciętne wynagrodzenie z pełnych miesięcy ubezpieczenia poprzedzających niezdolność do pracy." },
+      { level: "info", badge: "WAŻNE DLA JDG", title: "Podstawa wymiaru świadczenia", desc: "ZUS lub płatnik uwzględni przeciętne wynagrodzenie z pełnych miesięcy ubezpieczenia poprzedzających niezdolność. Miesiąc, w którym przepracowano mniej niż połowę czasu, wypada z podstawy. Pozorne zatrudnienie albo pozorne podwyższenie podstawy w ciąży może skończyć się odmową." },
       { level: "ok", badge: "OCHRONA AKTYWNA", title: "Ochrona stosunku pracy", desc: "W okresie ciąży i urlopu pracodawca co do zasady nie może wypowiedzieć ani rozwiązać umowy o pracę." },
     ],
   },
@@ -572,7 +632,7 @@ export const FALLBACK_SCENARIOS: Scenario[] = [
     risks: [
       { level: "warning", badge: "KONTROLA ZUS", title: "Podwyższenie podstawy składek", desc: "Nagła deklaracja maksymalnej podstawy przed porodem często skutkuje kontrolą tytułu ubezpieczenia przez ZUS." },
       { level: "warning", badge: "PILNUJ TERMINÓW", title: "Zadłużenie powyżej 1% płacy minimalnej", desc: "Zaległość przekraczająca 1% minimalnego wynagrodzenia wstrzymuje wypłatę zasiłku do czasu pełnej spłaty." },
-      { level: "ok", badge: "ZUS PŁATNIKIEM", title: "Wniosek ZAM bezpośrednio do ZUS", desc: "Przy JDG składasz wyłącznie wniosek ZAM przez eZUS bez zaświadczenia Z-3." },
+      { level: "ok", badge: "ZUS PŁATNIKIEM", title: "Wniosek ZAM bezpośrednio do ZUS", desc: "Przy JDG składasz wniosek ZAM przez eZUS bez zaświadczenia Z-3. Art. 177 Kodeksu pracy (ochrona przed wypowiedzeniem) dotyczy umowy o pracę i nie obejmuje działalności." },
     ],
   },
   {
@@ -590,7 +650,7 @@ export const FALLBACK_SCENARIOS: Scenario[] = [
     base_salary_gross: 5400,
     risks: [
       { level: "ok", badge: "WAŻNY WYJĄTEK", title: "Zasiłek macierzyński bez okresu wyczekiwania", desc: "Do zasiłku macierzyńskiego NIE obowiązuje 90-dniowy okres wyczekiwania — wystarczy podleganie ubezpieczeniu w dniu porodu." },
-      { level: "warning", badge: "UWAGA NA L4", title: "Brak prawa do zasiłku chorobowego przed porodem", desc: "Przed upływem 90 dni dobrowolnego ubezpieczenia zwolnienie lekarskie w ciąży będzie bezpłatne." },
+      { level: "warning", badge: "UWAGA NA L4", title: "Brak prawa do zasiłku chorobowego przed porodem", desc: "Przed upływem 90 dni dobrowolnego ubezpieczenia zwolnienie lekarskie w ciąży będzie bezpłatne, chyba że dotyczy absolwenta, 10 lat wcześniejszego obowiązkowego ubezpieczenia albo wypadku w drodze do pracy lub z pracy. Art. 177 Kodeksu pracy nie chroni zleceniobiorcy przed rozwiązaniem umowy." },
       { level: "info", badge: "DOKUMENT Z-3a", title: "Wymagane zaświadczenie zleceniodawcy Z-3a", desc: "Zleceniodawca musi przekazać do ZUS formularz Z-3a z podstawą składek." },
     ],
   },

@@ -105,8 +105,8 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
 const navItems: { id: View; label: string; short: string; icon: IconName }[] = [
   { id: "status", label: "Mój Status i Symulacja eZUS", short: "Mój status", icon: "home" },
   { id: "calculator", label: "Zintegrowany Kalkulator Zasiłków", short: "Kalkulator", icon: "calculator" },
-  { id: "pdf", label: "Weryfikator Spraw PDF (Test ZUS)", short: "Weryfikator PDF", icon: "file" },
   { id: "documents", label: "Wnioski, Dokumenty i Terminy", short: "Dokumenty", icon: "clipboard" },
+  { id: "pdf", label: "Weryfikator Spraw PDF", short: "Weryfikator PDF", icon: "file" },
   { id: "support", label: "Strefa Wsparcia i Sytuacje Trudne", short: "Wsparcie", icon: "heart" },
 ];
 
@@ -233,7 +233,7 @@ function AiExplainer({ focus, onClose }: { focus: "risks" | "pdf"; onClose: () =
           <article>
             <h3>Ekstrakcja pól z PDF</h3>
             <p>Najpierw PyMuPDF wyciąga tekst, a lokalny parser czyta z niego imię i rolę, datę porodu albo przyjęcia, podstawę, tytuł ubezpieczenia i liczbę ubezpieczonych. Ten odczyt jest powtarzalny i nie podstawia kwot, gdy pola nie ma w pliku.</p>
-            <p>Gdy ustawiony jest klucz <strong>GEMINI_API_KEY</strong>, model <strong>Gemini 2.5 Flash</strong> uzupełnia tylko puste pola, a przy skanie bez warstwy tekstowej może zrobić OCR. Bez klucza skan kończy się komunikatem o braku OCR. Kalkulator liczy już odczytaną podstawę po odjęciu 13,71%.</p>
+            <p>Gdy w pliku nie ma warstwy tekstowej, lokalny RapidOCR czyta najwyżej dwie pierwsze strony. Pusty odczyt kończy się komunikatem i nie dostaje kwoty ani daty. Jeśli w środowisku jest <strong>NVIDIA_API_KEY</strong>, model <strong>nemotron-3.5-bolt</strong> może uzupełnić tylko puste pola: imię, datę, podstawę albo formę zatrudnienia. Nie nadpisuje tego, co odczytał parser. Kwotę świadczenia zawsze liczy silnik, po odjęciu 13,71% od podstawy.</p>
           </article>
           <article>
             <h3>Radar ryzyk prawnych</h3>
@@ -276,7 +276,7 @@ function StatusView({ goTo, scenario, legislation, anonymous = false, onLogin, o
   const daysLeft = daysBetween(SIMULATION_AS_OF, scenario.due_date);
   return (
     <>
-      <PageIntro step="KROK 1 Z 4 · TWÓJ PUNKT STARTOWY" title={anonymous ? `Symulacja uprawnień: ${scenario.label.replace(/^\d+\.\s*/, "")}` : `Dzień dobry, ${scenario.first_name}`} description={anonymous ? "Poniżej są przykładowe parametry wybranej formy zatrudnienia. Nie są to dane z konta ubezpieczonego." : "Sprawdź, co wynika z Twojego ubezpieczenia i na co warto zwrócić uwagę przed złożeniem wniosku."}>
+      <PageIntro step="Twój profil" title={anonymous ? `Symulacja uprawnień: ${scenario.label.replace(/^\d+\.\s*/, "")}` : `Dzień dobry, ${scenario.first_name}`} description={anonymous ? "Poniżej są przykładowe parametry wybranej formy zatrudnienia. Nie są to dane z konta ubezpieczonego." : "Sprawdź, co wynika z Twojego ubezpieczenia i na co warto zwrócić uwagę przed złożeniem wniosku."}>
         <div className="intro-actions">
           {anonymous && <div className="last-sync"><span className="status-dot" /> Dane symulacyjne aktualne na <strong>12.06.2026, 10:42</strong></div>}
           <Button variant="secondary" onClick={onInquire}>Wyślij zapytanie do PUE/eZUS</Button>
@@ -339,7 +339,7 @@ function StatusView({ goTo, scenario, legislation, anonymous = false, onLogin, o
       </div>
 
       <section className="risk-section" aria-busy={syncing}>
-        <SectionHeader eyebrow="RADAR RYZYK I PUŁAPEK" title={syncing ? "Ryzyka po odczycie konta" : `${scenario.risks.length} ${scenario.risks.length === 1 ? "rzecz" : "rzeczy"}, które warto sprawdzić teraz`} action={<AiInfo focus="risks" />} />
+        <SectionHeader eyebrow="Ważne informacje" title={syncing ? "Ryzyka po odczycie konta" : `${scenario.risks.length} ${scenario.risks.length === 1 ? "rzecz" : "rzeczy"}, które warto sprawdzić teraz`} action={<AiInfo focus="risks" />} />
         {syncing ? <SyncSlot syncing pending="Weryfikacja konta płatnika..."> </SyncSlot> : (
         <div className="risk-grid">
           {scenario.risks.map((risk) => (
@@ -355,7 +355,7 @@ function StatusView({ goTo, scenario, legislation, anonymous = false, onLogin, o
       </section>
 
       <section className="next-step">
-        <div><span className="step-number">2</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Oblicz wysokość i okres wypłaty</h3><p>Porównaj wariant {formatRate(legislation.rate_single_variant)} z podziałem {formatRate(legislation.rate_maternity)} + {formatRate(legislation.rate_parental)}.</p></div></div>
+        <div><span className="step-number">02</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Oblicz wysokość i okres wypłaty</h3><p>Porównaj wariant {formatRate(legislation.rate_single_variant)} z podziałem {formatRate(legislation.rate_maternity)} + {formatRate(legislation.rate_parental)}.</p></div></div>
         <Button onClick={() => goTo("calculator")} icon="calculator">Przejdź do kalkulatora świadczeń</Button>
       </section>
     </>
@@ -370,7 +370,6 @@ type DemoPreset = {
   id: string;
   label: string;
   hint: string;
-  details: { label: string; text: string }[];
   showSchedule: boolean;
   benefitKind: string;
   employment: string;
@@ -435,6 +434,13 @@ const BASE_CALCULATOR_STATE = {
   rehabMonths: "0",
   rehabPregnant: true,
   waitingDays: "",
+  waitingException: "",
+  insuredOnBirth: true,
+  gapBeforeCodeB: "",
+  priorSickDays: "0",
+  childDeath: false,
+  deathDay: "0",
+  childrenAlive: "0",
   debt: "0",
   motherUnavailable: false,
 };
@@ -492,7 +498,7 @@ function formFromPreset(preset: DemoPreset): CalculatorFormState {
   };
 }
 
-function demoPreset(partial: Pick<DemoPreset, "id" | "label" | "hint" | "details"> & Partial<DemoPreset>): DemoPreset {
+function demoPreset(partial: Pick<DemoPreset, "id" | "label" | "hint"> & Partial<DemoPreset>): DemoPreset {
   return {
     showSchedule: false,
     benefitKind: "birth",
@@ -533,80 +539,44 @@ function demoPreset(partial: Pick<DemoPreset, "id" | "label" | "hint" | "details
 const DEMO_PRESETS: DemoPreset[] = [
   demoPreset({
     id: "uop-standard",
-    label: "1. Standard UoP — wariant 81,5% + 9 tyg. ojca",
-    hint: "Wzorcowa umowa o pracę: podstawa po składkach, wariant 81,5% i dziewięć tygodni drugiego rodzica liczone osobno, po 70%.",
-    details: [
-      { label: "Dane", text: "Ewa Malinowska (matka) i Piotr Malinowski, umowa o pracę, pełny etat, 8 200,00 zł brutto, 25 ubezpieczonych, poród 18.09.2026, jedno dziecko. Imiona biorą się z formularza, nie ze stałej w silniku." },
-      { label: "Podstawa", text: "8 200,00 × (1 − 13,71%) = 7 075,78 zł. Stawka 81,5% daje 5 766,76 zł brutto miesięcznie, a po zaliczce PIT 12% zostaje 5 074,75 zł netto." },
-      { label: "Wymiar", text: "20 tygodni macierzyńskiego i 32 tygodnie rodzicielskiego matki po 81,5%, 9 tygodni wyłącznie dla ojca po 70% oraz 2 tygodnie urlopu ojcowskiego po 100%. Razem 63 tygodnie. Dziewięć tygodni ojca nie wchodzi w uśrednienie 81,5%." },
-      { label: "Płatnik", text: "Firma zgłasza powyżej 20 ubezpieczonych, więc zasiłek wypłaca pracodawca. Zaświadczenie Z-3 nie jest potrzebne." },
-    ],
+    label: "1. Standard UoP",
+    hint: "Zwykła umowa o pracę i wariant 81,5%.",
   }),
   demoPreset({
     id: "jdg-zus",
-    label: "2. JDG (przedsiębiorca) — wypłata przez ZUS (druk ZAM)",
-    hint: "Przedsiębiorca składa sam wniosek ZAM do ZUS. Macierzyński nie wymaga 90 dni dobrowolnego chorobowego.",
-    details: [
-      { label: "Dane", text: "Działalność gospodarcza, zadeklarowane 6 500,00 zł, jeden ubezpieczony, wariant 81,5%, ta sama data porodu. Łączenie rodzicielskiego z pracą jest przy JDG wyłączone." },
-      { label: "Podstawa", text: "6 500,00 × (1 − 13,71%) = 5 608,85 zł. Miesięcznie jest to 4 571,21 zł brutto i 4 022,66 zł netto. Kwota mieści się pod sufitem 20 321,30 zł." },
-      { label: "Wypłata", text: "Płatnikiem jest ZUS. Składa się wniosek ZAM. Zaświadczenia Z-3 nie ma, a formularz Z-3b został zniesiony 24.10.2026 r." },
-      { label: "Wyczekiwanie", text: "90 dni dobrowolnego ubezpieczenia dotyczy zasiłku chorobowego, nie macierzyńskiego. Prawo do macierzyńskiego jest od pierwszego dnia podlegania, jeśli ubezpieczenie trwa w dniu porodu." },
-    ],
+    label: "2. JDG (przedsiębiorca)",
+    hint: "Działalność gospodarcza. Zasiłek wypłaca ZUS.",
     employment: "jdg",
     base: 6500,
     insured: 1,
   }),
   demoPreset({
     id: "ceiling",
-    label: "3. Sufit podstawy JDG / Zlecenie (limit 250% — 20 321,30 zł)",
-    hint: "Deklaracja powyżej limitu 2026 r. jest ścinana przed policzeniem 81,5%. Ten sam sufit dotyczy umowy zlecenia.",
-    details: [
-      { label: "Dane", text: "JDG i deklarowane 30 000,00 zł brutto. Przy zleceniu z taką samą deklaracją silnik stosuje identyczny limit." },
-      { label: "Obcięcie", text: "250% prognozowanego przeciętnego wynagrodzenia na 2026 r. to 23 550,00 zł brutto. Nadwyżka nad tę kwotę odpada, zanim liczone jest 13,71%." },
-      { label: "Podstawa", text: "23 550,00 × (1 − 13,71%) = 20 321,30 zł. Dalej 81,5% daje 16 561,86 zł brutto miesięcznie i 14 574,44 zł netto." },
-      { label: "Gdzie widać", text: "W kafelku podstawy jest 20 321,30 zł, a w notatce planu zdanie o ścięciu do 23 550,00 zł. Płatnikiem zostaje ZUS." },
-    ],
+    label: "3. Sufit podstawy JDG / Zlecenie",
+    hint: "Deklaracja wyższa niż limit podstawy na 2026 r.",
     employment: "jdg",
     base: 30000,
     insured: 1,
   }),
   demoPreset({
     id: "quarter",
-    label: "4. Niski wymiar etatu (1/4 etatu) — podwyższenie do 1 000 zł (art. 31 ust. 3a)",
-    hint: "Niepełny etat nie jest podciągany do pełnej płacy minimalnej. Gdy netto wyszłoby poniżej 1 000 zł, wypłata jest podnoszona do świadczenia rodzicielskiego.",
-    details: [
-      { label: "Dane", text: "Umowa o pracę na 1/4 etatu i wynagrodzenie 1 201,50 zł brutto. To dokładnie 4 806,00 × 0,25, czyli podłoga proporcjonalna do etatu, a nie pełne 4 806,00 zł." },
-      { label: "Wyliczenie", text: "1 201,50 × (1 − 13,71%) = 1 036,77 zł podstawy. Przy 81,5% wychodzi 844,97 zł brutto i 743,57 zł netto." },
-      { label: "Podwyższenie", text: "Art. 31 ust. 3a ustawy zasiłkowej: skoro netto jest niższe niż 1 000,00 zł, miesięczna wypłata brutto i netto staje się 1 000,00 zł. Na kafelku widać dopisek o podwyższeniu." },
-      { label: "Podłoga etatu", text: "Pełna podłoga 4 806,00 zł i podstawa 4 147,10 zł dotyczą pełnego etatu. Przy 1/4 etatu wynagrodzenie zostaje 1 201,50 zł, bo tyle wynosi 4 806,00 × 0,25." },
-    ],
+    label: "4. Niski wymiar etatu",
+    hint: "Ćwierć etatu. Wypłata nie schodzi poniżej 1 000 zł.",
     base: 1201.5,
     contractFte: "0.25",
   }),
   demoPreset({
     id: "combine",
-    label: "5. Łączenie urlopu rodzicielskiego z pracą (10 tyg. na 0,5 etatu -> 68 tyg.)",
-    hint: "Pracownik może łączyć rodzicielski z pracą do połowy etatu. W tych tygodniach stawka spada proporcjonalnie, a wydłużenie wraca do pełnych 81,5%.",
-    details: [
-      { label: "Dane", text: "Ta sama umowa 8 200,00 zł i pełny etat w umowie. Dodatkowo 10 tygodni łączenia z pracą na 0,5 etatu. Przy JDG i zleceniu ten suwak jest zablokowany (art. 182¹e KP)." },
-      { label: "Stawka w trakcie pracy", text: "81,5% × (1 − 0,5) = 40,75%. Tyle jest w wierszach „Rodzicielski łączony z pracą”. Dziewięć tygodni ojca dalej idzie po 70%, a ojcowski po 100%." },
-      { label: "Wydłużenie", text: "Art. 182¹f KP: dodatkowe tygodnie = 10 × 0,5 = 5. Po okresie pracy stawka wraca do 81,5% w wierszach „Wydłużenie za pracę”. Wymiar rośnie z 63 do 68 tygodni." },
-      { label: "Gdzie widać", text: "Harmonogram jest rozwinięty. Obniżona stawka jest dopiero po macierzyńskim, więc trzeba zejść do 2027 r., a nie patrzeć tylko na pierwsze miesiące po porodzie." },
-    ],
+    label: "5. Łączenie urlopu rodzicielskiego z pracą",
+    hint: "Rodzicielski łączony z pracą na pół etatu.",
     etat: 0.5,
     combineWeeks: "10",
     showSchedule: true,
   }),
   demoPreset({
     id: "hospital",
-    label: "6. Wcześniactwo i hospitalizacja noworodka (30. tydz., 1400 g, 20 dni)",
-    hint: "Uzupełniający urlop macierzyński za pobyt noworodka w szpitalu jest liczony z dni i płacony 100%, obok wariantu 81,5%.",
-    details: [
-      { label: "Dane", text: "Poród w 30. tygodniu ciąży, masa 1 400 g, 20 dni w szpitalu, ta sama podstawa 8 200,00 zł i wariant 81,5%. Pól „pobyt od / do dnia życia” nie ustawiamy, bo okno 5.–28. dnia dotyczy dopiero porodu od 37. tygodnia." },
-      { label: "Tygodnie", text: "Art. 180² KP: dla 28.–36. tygodnia i masy powyżej 1 000 g limit wynosi 8 tygodni. Z 20 dni wychodzi ceil(20 / 7) = 3 tygodnie. Przy tygodniu poniżej 28. albo masie do 1 000 g limit wynosi 15 tygodni." },
-      { label: "Pieniądze", text: "Te 3 tygodnie stoją bezpośrednio po macierzyńskim i mają stawkę 100%. Macierzyński zostaje osobno: 5 766,76 zł, czyli 81,5% podstawy 7 075,78 zł." },
-      { label: "Gdzie widać", text: "Pod polami szpitala jest żywy licznik „Uzupełniający urlop: 3 tyg.”, a w harmonogramie osobny wiersz płatny 100%." },
-    ],
+    label: "6. Wcześniactwo i hospitalizacja noworodka",
+    hint: "Poród wcześniaka i pobyt dziecka w szpitalu.",
     gestation: "30",
     grams: "1400",
     hospitalDays: "20",
@@ -614,40 +584,22 @@ const DEMO_PRESETS: DemoPreset[] = [
   }),
   demoPreset({
     id: "prebirth",
-    label: "7. Urlop macierzyński przed porodem (4 tygodnie przed terminem)",
-    hint: "Część macierzyńskiego można wykorzystać przed porodem. Te tygodnie są płatne pełniej niż reszta wariantu 81,5% i skracają pulę po porodzie.",
-    details: [
-      { label: "Dane", text: "Umowa o pracę, 8 200,00 zł, wariant 81,5% i 4 tygodnie urlopu przed porodem. Ustawa pozwala na 0–6 tygodni; wartość powyżej 6 jest obcinana do 6." },
-      { label: "Podział 20 tygodni", text: "Art. 180 § 2–3 KP: 4 tygodnie przed 18.09.2026 są płatne 100% podstawy. Po porodzie zostaje 16 tygodni macierzyńskiego po 81,5%. Rodzicielski, 9 tygodni ojca i ojcowski się nie skracają." },
-      { label: "Długość", text: "Łączny czas opieki zostaje 63 tygodnie, bo 4 tygodnie nie dochodzą obok 20, tylko wychodzą z tej dwudziestki i przesuwają się przed datę porodu." },
-      { label: "Gdzie widać", text: "Suwak pokazuje „4 tyg. · 100%”, a w harmonogramie sprzed września 2026 jest wiersz „Urlop przed porodem” ze stawką 100%." },
-    ],
+    label: "7. Urlop macierzyński przed porodem",
+    hint: "Część macierzyńskiego wykorzystana przed porodem.",
     preWeeks: 4,
   }),
   demoPreset({
     id: "adoption",
-    label: "8. Adopcja dziecka w wieku 13,95 roku — gwarancja 9 + 38 tygodni",
-    hint: "Przy adopcji tuż przed 14. rokiem życia pełny urlop już by się nie zmieścił, więc ustawa daje gwarantowane minimum zamiast ucinać do zera.",
-    details: [
-      { label: "Dane", text: "Zdarzenie adopcja, wiek dziecka 13,95 roku, bez zaświadczenia „Za życiem”. Do 14. urodzin zostaje około 2,6 tygodnia, czyli mniej niż zwykłe 20 + 41." },
-      { label: "Gwarancja", text: "Art. 183 KP: skoro dziecko nie ukończyło 14 lat, a zwykły wymiar się nie mieści, przyznawane jest minimum 9 tygodni na warunkach macierzyńskiego i 38 tygodni rodzicielskiego. Z tych 38 ojciec ma 9 tygodni po 70%." },
-      { label: "Za życiem", text: "Włączenie przełącznika w formularzu zmienia gwarancję na 9 + 62 tygodnie. Sam preset zostawia przełącznik wyłączony, żeby najpierw było widać 9 + 38." },
-      { label: "Ojcowski", text: "Dwa tygodnie urlopu ojcowskiego po 100% dochodzą obok tej gwarancji, bo dziecko nie ma jeszcze 14 lat. Do puli 9 + 38 ich nie wliczamy." },
-    ],
+    label: "8. Adopcja dziecka",
+    hint: "Adopcja dziecka tuż przed 14. rokiem życia.",
     benefitKind: "adoption",
     childAge: "13.95",
     showSchedule: true,
   }),
   demoPreset({
     id: "pregnancy",
-    label: "9. Ciąża L4 (270 dni) + Świadczenie rehabilitacyjne (100%)",
-    hint: "Zwolnienie w ciąży jest płatne 100% podstawy. Najpierw wynagrodzenie chorobowe pracodawcy, potem zasiłek do 270. dnia, a po wyczerpaniu limitu rehabilitacja nadal w ciąży.",
-    details: [
-      { label: "Dane", text: "Zdarzenie ciąża i L4, umowa o pracę, wiek 40 lat, 270 dni niezdolności i 2 miesiące rehabilitacji nadal w ciąży. Podstawa z 8 200,00 zł to 7 075,78 zł, więc miesiąc po 100% wynosi 7 075,78 zł brutto i 6 226,69 zł netto. Wariant 81,5% tego świadczenia nie dotyczy." },
-      { label: "270 dni", text: "Poniżej 50. roku życia pierwsze 33 dni to wynagrodzenie chorobowe pracodawcy (art. 92 KP). Od 50. roku byłyby to 14 dni. Reszta, tutaj 237 dni, to zasiłek chorobowy 100% do łącznego limitu 270 dni." },
-      { label: "Rehabilitacja", text: "Zaczyna się dopiero po 270 dniach. Dwa miesiące to 60 dni. W ciąży stawka zostaje 100%. Poza ciążą byłoby 90% przez pierwsze 90 dni i 75% dalej, najwyżej przez 12 miesięcy." },
-      { label: "Płatnik", text: "Firma ma 25 ubezpieczonych, więc świadczenie wypłaca pracodawca. Przy JDG albo zleceniu zasiłek chorobowy wymaga 90 dni dobrowolnego ubezpieczenia; ten preset tego progu nie włącza, bo tytułem jest umowa o pracę." },
-    ],
+    label: "9. Ciąża L4 i świadczenie rehabilitacyjne",
+    hint: "Zwolnienie lekarskie w ciąży i świadczenie rehabilitacyjne.",
     benefitKind: "pregnancy",
     insuredAge: "40",
     sickDays: "270",
@@ -699,6 +651,110 @@ function childWeekSuffix(kind: string) {
   return kind === "birth" ? "tyg. macierzyńskiego" : "tyg. na warunkach macierzyńskiego";
 }
 
+const CHART_NOTES = /Pierwsze 14 tygodni macierzyńskiego|9 tygodni rodzicielskiego drugiego rodzica|Urlop przed porodem zostaje przy matce|Urlop ojcowski nie wchodzi w okres ciąży/;
+
+type LeaveBar = {
+  key: string;
+  who: "mother" | "father";
+  label: string;
+  detail: string;
+  start: number;
+  length: number;
+  tone: string;
+  lane: number;
+};
+
+function durationLabel(days: number) {
+  const weeks = Math.floor(days / 7);
+  const rest = days % 7;
+  if (weeks && rest) return `${weeks} tyg. ${rest} dni`;
+  if (weeks) return `${weeks} tyg.`;
+  return `${rest} dni`;
+}
+
+function percentOfRate(rate: number) {
+  return `${(rate * 100).toFixed(1).replace(".0", "").replace(".", ",")}%`;
+}
+
+function withLanes(bars: Omit<LeaveBar, "lane">[]): LeaveBar[] {
+  const sorted = [...bars].sort((a, b) => a.start - b.start || b.length - a.length);
+  const laneEnds: number[] = [];
+  return sorted.map((bar) => {
+    let lane = laneEnds.findIndex((end) => end <= bar.start + 0.001);
+    if (lane < 0) {
+      lane = laneEnds.length;
+      laneEnds.push(bar.start + bar.length);
+    } else {
+      laneEnds[lane] = bar.start + bar.length;
+    }
+    return { ...bar, lane };
+  });
+}
+
+function leaveChart(input: {
+  breakdown: BenefitPlan["breakdown"];
+  role: string;
+  employment: string;
+  benefitKind: string;
+  motherUnavailable: boolean;
+  etat: number;
+  combineWeeks: string;
+  rateMaternity: number;
+  rateOwn: number;
+  rateOther: number;
+}) {
+  const { breakdown, role, employment, benefitKind, motherUnavailable, etat, combineWeeks, rateMaternity, rateOwn, rateOther } = input;
+  const pre = breakdown.pre_birth_weeks ?? 0;
+  const post = breakdown.maternity_weeks || 0;
+  const hospital = breakdown.premature_weeks || 0;
+  const motherParental = breakdown.parental_weeks_mother || 0;
+  const fatherExclusive = breakdown.parental_weeks_father_exclusive || 0;
+  const paternity = breakdown.paternity_weeks || 0;
+  const maternityName = benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego";
+  const care: "mother" | "father" = motherUnavailable ? "father" : "mother";
+  const etatWork = employment === "uop" ? Math.min(0.5, Math.max(0, etat)) : 0;
+  const ownerPool = role === "ojciec" ? fatherExclusive : motherParental;
+  const combine = etatWork > 0 ? Math.min(ownerPool, Math.max(0, Number(combineWeeks) || 0)) : 0;
+  const ownerDays = Math.round(ownerPool * 7);
+  const reducedDays = Math.round(combine * 7);
+  const fullDays = Math.max(0, ownerDays - reducedDays);
+  const extensionDays = (breakdown.extension_weeks ?? 0) * 7 + (breakdown.extension_days ?? 0);
+  const owner: "mother" | "father" = role === "ojciec" ? "father" : "mother";
+  const ownerRate = role === "ojciec" ? rateOther : rateOwn;
+  const bars: Omit<LeaveBar, "lane">[] = [];
+  let cursor = 0;
+  const push = (who: "mother" | "father", label: string, days: number, tone: string, rate: number) => {
+    if (days <= 0) return;
+    bars.push({ key: `${who}-${label}-${cursor}`, who, label, detail: `${durationLabel(days)} · ${percentOfRate(rate)}`, start: cursor, length: days / 7, tone });
+    cursor += days / 7;
+  };
+  if (pre > 0) bars.push({ key: "pre", who: "mother", label: "Przed porodem", detail: `${pre} tyg. · 100%`, start: -pre, length: pre, tone: "full" });
+  if (motherUnavailable && post > 0) {
+    const kept = Math.min(8, post);
+    push("mother", maternityName, kept * 7, "maternity", rateMaternity);
+    push("father", maternityName, (post - kept) * 7, "maternity", rateMaternity);
+  } else {
+    push(care, maternityName, post * 7, "maternity", rateMaternity);
+  }
+  push(motherUnavailable ? "father" : care, "Po szpitalu", hospital * 7, "full", 1);
+  if (role === "ojciec") {
+    push("father", "Rodzicielski ojca", fullDays, "father", rateOther);
+    push("father", "Z pracą", reducedDays, "reduced", ownerRate * (1 - etatWork));
+    push("father", "Wydłużenie", extensionDays, "parental", ownerRate);
+    push("mother", "Rodzicielski matki", motherParental * 7, "parental", rateOwn);
+  } else {
+    push(owner, "Rodzicielski", fullDays, "parental", rateOwn);
+    push(owner, "Z pracą", reducedDays, "reduced", ownerRate * (1 - etatWork));
+    push(owner, "Wydłużenie", extensionDays, "parental", ownerRate);
+    push("father", "Dla ojca", fatherExclusive * 7, "father", rateOther);
+  }
+  if (paternity > 0) bars.push({ key: "paternity", who: "father", label: "Ojcowski od porodu", detail: `${paternity} tyg. · 100%`, start: 0, length: paternity, tone: "full" });
+  const placed = [...withLanes(bars.filter((bar) => bar.who === "mother")), ...withLanes(bars.filter((bar) => bar.who === "father"))];
+  const axisStart = placed.reduce((min, bar) => Math.min(min, bar.start), 0);
+  const axisEnd = placed.reduce((max, bar) => Math.max(max, bar.start + bar.length), 0) || 1;
+  return { bars: placed, axisStart, axisEnd, span: Math.max(0.01, axisEnd - axisStart) };
+}
+
 function applicantFieldLabel(role: string) {
   if (role === "ojciec") return "Ojciec (wnioskodawca)";
   if (role === "opiekun") return "Opiekun (wnioskodawca)";
@@ -732,7 +788,7 @@ function firstMonths(schedule: BenefitPlan["schedule"], months: number) {
 }
 
 function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdentity, onFiledCase, onResetChecklist, goTo, anonymous = false, form, setForm, presetId, setPresetId, showSchedule, setShowSchedule, seenTransfer }: { scenario: Scenario; legislation: LegislationParams; pdfCase: PdfCase | null; transfer: { token: number; item: PdfCase } | null; onDemoIdentity: (identity: { name: string; subtitle: string } | null) => void; onFiledCase: (plan: FiledPlan) => void; onResetChecklist: () => void; goTo: (view: View) => void; anonymous?: boolean; form: CalculatorFormState; setForm: (value: CalculatorFormState | ((current: CalculatorFormState) => CalculatorFormState)) => void; presetId: string; setPresetId: (value: string) => void; showSchedule: boolean; setShowSchedule: (value: boolean | ((current: boolean) => boolean)) => void; seenTransfer: { current: number } }) {
-  const { benefitKind, children, base, option, life, etat, combineWeeks, employment, due, preWeeks, gestation, grams, hospitalDays, stayFrom, stayTo, contractFte, childAge, childMonths, schoolDeferral, parentName, secondParent, role, insured, insuredAge, sickDays, rehabMonths, rehabPregnant, waitingDays, debt, motherUnavailable, paternity } = form;
+  const { benefitKind, children, base, option, life, etat, combineWeeks, employment, due, preWeeks, gestation, grams, hospitalDays, stayFrom, stayTo, contractFte, childAge, childMonths, schoolDeferral, parentName, secondParent, role, insured, insuredAge, sickDays, rehabMonths, rehabPregnant, waitingDays, waitingException, insuredOnBirth, gapBeforeCodeB, priorSickDays, childDeath, deathDay, childrenAlive, debt, motherUnavailable, paternity } = form;
   const setBenefitKind = (value: string) => setForm((current) => ({ ...current, benefitKind: value }));
   const setChildren = (value: string) => setForm((current) => ({ ...current, children: value }));
   const setBase = (value: number) => setForm((current) => ({ ...current, base: value }));
@@ -761,6 +817,13 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
   const setRehabMonths = (value: string) => setForm((current) => ({ ...current, rehabMonths: value }));
   const setRehabPregnant = (value: boolean) => setForm((current) => ({ ...current, rehabPregnant: value }));
   const setWaitingDays = (value: string) => setForm((current) => ({ ...current, waitingDays: value }));
+  const setWaitingException = (value: string) => setForm((current) => ({ ...current, waitingException: value }));
+  const setInsuredOnBirth = (value: boolean) => setForm((current) => ({ ...current, insuredOnBirth: value }));
+  const setGapBeforeCodeB = (value: string) => setForm((current) => ({ ...current, gapBeforeCodeB: value }));
+  const setPriorSickDays = (value: string) => setForm((current) => ({ ...current, priorSickDays: value }));
+  const setChildDeath = (value: boolean) => setForm((current) => ({ ...current, childDeath: value }));
+  const setDeathDay = (value: string) => setForm((current) => ({ ...current, deathDay: value }));
+  const setChildrenAlive = (value: string) => setForm((current) => ({ ...current, childrenAlive: value }));
   const setDebt = (value: string) => setForm((current) => ({ ...current, debt: value }));
   const setMotherUnavailable = (value: boolean) => setForm((current) => ({ ...current, motherUnavailable: value }));
   const setPaternity = (value: boolean) => setForm((current) => ({ ...current, paternity: value }));
@@ -805,10 +868,17 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
     miesiace_rehabilitacji: Number(rehabMonths) || 0,
     rehabilitacja_w_ciazy: rehabPregnant,
     waiting_days: blankNumber(waitingDays),
+    wyjatek_wyczekiwania: waitingException,
+    chorobowe_w_dniu_porodu: employment === "jdg" || employment === "zlecenie" ? insuredOnBirth : undefined,
+    przerwa_przed_kodem_b: blankNumber(gapBeforeCodeB),
+    wczesniejsze_dni_l4: Number(priorSickDays) || 0,
+    zgon_dziecka: benefitKind === "birth" && childDeath,
+    dzien_zycia_przy_zgonie: blankNumber(deathDay),
+    dzieci_przy_zyciu: blankNumber(childrenAlive),
     debt_amount: Number(debt) || 0,
     matka_nie_moze_opiekowac: motherUnavailable,
     include_paternity: paternity,
-  }), [benefitKind, employment, children, due, life, option, base, parentName, secondParent, role, preWeeks, gestation, grams, hospitalDays, stayFrom, stayTo, contractFte, etat, combineWeeks, childAge, childMonths, schoolDeferral, insured, insuredAge, sickDays, rehabMonths, rehabPregnant, waitingDays, debt, motherUnavailable, paternity]);
+  }), [benefitKind, employment, children, due, life, option, base, parentName, secondParent, role, preWeeks, gestation, grams, hospitalDays, stayFrom, stayTo, contractFte, etat, combineWeeks, childAge, childMonths, schoolDeferral, insured, insuredAge, sickDays, rehabMonths, rehabPregnant, waitingDays, waitingException, insuredOnBirth, gapBeforeCodeB, priorSickDays, childDeath, deathDay, childrenAlive, debt, motherUnavailable, paternity]);
 
   const localPlan = useMemo(() => calculateLocally(payload, legislation), [payload, legislation]);
   const payloadKey = JSON.stringify(payload);
@@ -831,15 +901,11 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
   const hospitalPreview = supplementaryWeeks(blankNumber(gestation), blankNumber(grams), blankNumber(hospitalDays), blankNumber(stayFrom), blankNumber(stayTo));
   const hospitalAuto = benefitKind === "birth" && Number(gestation) >= 37 && stayFrom !== "" && stayTo !== "";
   const showPaternity = benefitKind !== "foster" && role !== "opiekun";
-  const extensionWeeks = breakdown.extension_weeks ?? 0;
-  const preSpan = breakdown.pre_birth_weeks ?? 0;
-  const postSpan = breakdown.maternity_weeks + (breakdown.premature_weeks ?? 0);
-  const maternitySpan = preSpan + postSpan;
-  const motherShare = breakdown.parental_weeks_mother + (role === "ojciec" ? 0 : extensionWeeks);
-  const fatherShare = breakdown.parental_weeks_father_exclusive + (role === "ojciec" ? extensionWeeks : 0);
-  const span = Math.max(1, maternitySpan + motherShare + fatherShare + breakdown.paternity_weeks);
-  const pct = (weeks: number) => `${(weeks / span) * 100}%`;
-  const maternityRate = option === "81.5" ? formatRate(legislation.rate_single_variant) : formatRate(legislation.rate_maternity);
+  const rateMaternity = (option === "81.5" ? legislation.rate_single_variant : legislation.rate_maternity) / 100;
+  const rateOwn = (option === "81.5" ? legislation.rate_single_variant : legislation.rate_parental) / 100;
+  const rateOther = legislation.rate_parental / 100;
+  const chart = leaveChart({ breakdown, role, employment, benefitKind, motherUnavailable, etat, combineWeeks, rateMaternity, rateOwn, rateOther });
+  const maternityRate = percentOfRate(rateMaternity);
   const singleLabel = formatRate(legislation.rate_single_variant);
   const splitLabel = `${formatRate(legislation.rate_maternity)} + ${formatRate(legislation.rate_parental)}`;
   const rows = showAll ? plan.schedule : firstMonths(plan.schedule, 12);
@@ -983,6 +1049,13 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
     setRehabMonths(state.rehabMonths);
     setRehabPregnant(state.rehabPregnant);
     setWaitingDays(state.waitingDays);
+    setWaitingException(state.waitingException);
+    setInsuredOnBirth(state.insuredOnBirth);
+    setGapBeforeCodeB(state.gapBeforeCodeB);
+    setPriorSickDays(state.priorSickDays);
+    setChildDeath(state.childDeath);
+    setDeathDay(state.deathDay);
+    setChildrenAlive(state.childrenAlive);
     setDebt(state.debt);
     setMotherUnavailable(state.motherUnavailable);
     setPaternity(state.paternity);
@@ -1044,13 +1117,6 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
     setEtat(next);
   }
 
-  function onPayerSize(value: string) {
-    setInsured((current) => {
-      if (value === "under") return current > 20 ? 15 : current;
-      return current <= 20 ? 25 : current;
-    });
-  }
-
   const activeDemo = DEMO_PRESETS.find((item) => item.id === demoId);
   const flash = (key: string) => (flashKeys.includes(key) ? "field-preset-flash" : "");
 
@@ -1071,7 +1137,7 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
 
   return (
     <>
-      <PageIntro step="KROK 2 Z 4 · KALKULATOR" title="Zaplanuj świadczenia i czas opieki" description="Porównaj dostępne warianty, podziel opiekę między rodziców i zobacz prognozę wypłat miesiąc po miesiącu.">
+      <PageIntro step="Kalkulator świadczeń" title="Zaplanuj świadczenia i czas opieki" description="Porównaj dostępne warianty, podziel opiekę między rodziców i zobacz prognozę wypłat miesiąc po miesiącu.">
         <Badge tone="neutral"><Icon name="lock" size={14} /> Obliczenia nie są zapisywane</Badge>
       </PageIntro>
       <div className="calculator-layout">
@@ -1083,15 +1149,12 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
               <button type="button" className="reset-button" onClick={resetForm}>Wyczyść / Resetuj formularz</button>
             </div>
             <select id="demo-preset" value={demoId} onChange={(event) => applyDemo(event.target.value)}>
-              <option value="">Wybierz scenariusz testowy / przypadek życiowy...</option>
+              <option value="" disabled hidden>Wybierz z listy</option>
               {DEMO_PRESETS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
             {activeDemo && (
               <div className="demo-hint">
                 <p>{activeDemo.hint}</p>
-                <ul>
-                  {activeDemo.details.map((item) => <li key={item.label}><strong>{item.label}.</strong> {item.text}</li>)}
-                </ul>
               </div>
             )}
           </div>
@@ -1103,15 +1166,6 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
               <button type="button" className={benefitKind === "adoption" ? "active" : ""} onClick={() => setBenefitKind("adoption")}>Adopcja</button>
               <button type="button" className={benefitKind === "foster" ? "active" : ""} onClick={() => setBenefitKind("foster")}>Piecza zastępcza</button>
             </div>
-          </div>
-          <div className={`field-group ${flash("employment")}`}>
-            <label htmlFor="employment">Forma zatrudnienia</label>
-            <select id="employment" value={employment} onChange={(e) => { const next = e.target.value; setEmployment(next); setInsured(insuredFor(next)); if (next !== "uop") { setEtat(0); setCombineWeeks("0"); } }}>
-              <option value="uop">Umowa o pracę</option>
-              <option value="zlecenie">Umowa zlecenie</option>
-              <option value="jdg">Działalność gospodarcza (JDG)</option>
-              <option value="ustanie">Ustanie zatrudnienia (upadłość/likwidacja)</option>
-            </select>
           </div>
           {benefitKind !== "pregnancy" && (
           <div className={`field-group ${flash("children")}`}>
@@ -1147,81 +1201,17 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
               {benefitKind === "foster" && <Toggle className={flash("schoolDeferral")} checked={schoolDeferral} onChange={setSchoolDeferral} label="Odroczenie obowiązku szkolnego" hint="Podnosi limit wieku do 10 lat" />}
             </div>
           )}
-          {benefitKind === "birth" && (
-            <AdvancedSection title="Urlop przed porodem (art. 180 § 2–3 KP)" active={preWeeks > 0}>
-              <div className={`label-line ${flash("preWeeks")}`}><label htmlFor="pre-weeks">Tygodnie urlopu przed porodem (0–6)</label><strong>{preWeeks} tyg. · 100%</strong></div>
-              <input id="pre-weeks" type="range" min="0" max="6" step="1" value={preWeeks} onChange={(e) => setPreWeeks(Number(e.target.value))} />
-            </AdvancedSection>
-          )}
-          {benefitKind === "birth" && (
-            <AdvancedSection title="Hospitalizacja noworodka / wcześniactwo" active={Boolean(gestation || grams || hospitalDays || stayFrom || stayTo)} className={`${flash("gestation")} ${flash("grams")} ${flash("hospitalDays")}`}>
-              {Number(children) > 1 && <p className="helper">Poród mnogi: wymiar uzupełniającego urlopu macierzyńskiego ustala się na podstawie dziecka o najniższej masie urodzeniowej oraz najdłuższym okresie hospitalizacji.</p>}
-              <div className="triple-fields">
-                <div className="field-group"><label htmlFor="gestation">Tydzień ciąży</label><input id="gestation" type="number" min="20" max="42" value={gestation} onChange={(e) => setGestation(e.target.value)} /></div>
-                <div className="field-group"><label htmlFor="grams">Masa (g)</label><input id="grams" type="number" min="0" value={grams} onChange={(e) => setGrams(e.target.value)} /></div>
-                <div className="field-group"><label htmlFor="hospital-days">Dni w szpitalu</label><input id="hospital-days" type="number" min="0" value={hospitalDays} disabled={hospitalAuto} onChange={(e) => setHospitalDays(e.target.value)} />{hospitalAuto && <p className="helper">Liczba dni wyliczana automatycznie z okna 5.–28. dnia życia na podstawie zakresu pobytu od–do.</p>}</div>
-              </div>
-              <div className="two-fields">
-                <div className="field-group"><label htmlFor="stay-from">Pobyt od dnia życia</label><input id="stay-from" type="number" min="1" max="28" value={stayFrom} onChange={(e) => setStayFrom(e.target.value)} /></div>
-                <div className="field-group"><label htmlFor="stay-to">Pobyt do dnia życia</label><input id="stay-to" type="number" min="1" max="40" value={stayTo} onChange={(e) => setStayTo(e.target.value)} /></div>
-              </div>
-              <p className="import-note">Uzupełniający urlop: {hospitalPreview} tyg. · płatne 100% i poza uśrednieniem 81,5%. Od 37. tygodnia liczą się co najmniej 2 dni między 5. a 28. dniem życia.</p>
-            </AdvancedSection>
-          )}
-          {benefitKind === "pregnancy" && (
-            <div className={`law-block ${benefitKind === "pregnancy" ? "is-live" : ""}`}>
-              <h3>Ciąża, e-ZLA kod B i świadczenie rehabilitacyjne</h3>
-              <div className="triple-fields">
-                <div className={`field-group ${flash("insuredAge")}`}><label htmlFor="insured-age">Wiek ubezpieczonej</label><input id="insured-age" type="number" min="15" max="80" value={insuredAge} onChange={(e) => setInsuredAge(e.target.value)} /></div>
-                <div className={`field-group ${flash("sickDays")}`}><label htmlFor="sick-days">Dni niezdolności</label><input id="sick-days" type="number" min="0" max="400" value={sickDays} onChange={(e) => setSickDays(e.target.value)} /></div>
-                <div className={`field-group ${flash("rehabMonths")}`}><label htmlFor="rehab-months">Miesiące rehabilitacji</label><input id="rehab-months" type="number" min="0" max="12" value={rehabMonths} onChange={(e) => setRehabMonths(e.target.value)} /><p className="helper">Świadczenie rehabilitacyjne przysługuje dopiero po wyczerpaniu pełnego okresu zasiłkowego (270 dni L4).</p></div>
-              </div>
-              <Toggle className={flash("rehabPregnant")} checked={rehabPregnant} onChange={setRehabPregnant} label="Rehabilitacja nadal w ciąży" hint="100% podstawy. Poza ciążą: 90% przez 90 dni, potem 75%." />
-              {(employment === "jdg" || employment === "zlecenie") && (
-                <div className="field-group"><label htmlFor="waiting">Dni podlegania dobrowolnemu ubezpieczeniu</label><input id="waiting" type="number" min="0" value={waitingDays} onChange={(e) => setWaitingDays(e.target.value)} /></div>
-              )}
-            </div>
-          )}
-          {benefitKind !== "pregnancy" && (
-          <div className="toggle-box">
-            <Toggle className={flash("life")} checked={life} onChange={setLife} label="Zaświadczenie „Za życiem”" hint="Urlop rodzicielski 65/67 tygodni, a przy gwarancji minimalnej 62 tygodnie" />
-            {showPaternity && <Toggle className={flash("paternity")} checked={paternity} onChange={setPaternity} label="Urlop ojcowski" hint="2 tygodnie, 100% podstawy, do 12. miesiąca życia albo 14. roku przy adopcji" />}
-            <Toggle className={flash("motherUnavailable")} checked={motherUnavailable} onChange={setMotherUnavailable} label="Matka nie może sprawować opieki" hint={benefitKind === "birth" ? undefined : "Wtedy blok po przyjęciu dziecka może wykorzystać ojciec"} />
-            {benefitKind === "birth" && <p className="helper">Gdy matka nie może sprawować opieki, urlop przed porodem zostaje przy niej, a zasiłek po porodzie i urlop uzupełniający przejmuje ojciec.</p>}
+          <div className={`field-group ${flash("employment")}`}>
+            <label htmlFor="employment">Forma zatrudnienia</label>
+            <select id="employment" value={employment} onChange={(e) => { const next = e.target.value; setEmployment(next); setInsured(insuredFor(next)); if (next !== "uop") { setEtat(0); setCombineWeeks("0"); } }}>
+              <option value="uop">Umowa o pracę</option>
+              <option value="zlecenie">Umowa zlecenie</option>
+              <option value="jdg">Działalność gospodarcza (JDG)</option>
+              <option value="ustanie">Ustanie zatrudnienia (upadłość/likwidacja)</option>
+            </select>
           </div>
-          )}
-          {benefitKind !== "pregnancy" && <div className={`field-group ${flash("option")}`}>
-            <label>Wariant wypłaty</label>
-            <label className={`radio-card ${option === "81.5" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "81.5"} onChange={() => setOption("81.5")} /><span><strong>{singleLabel} przez cały okres</strong><small>Urlop przed porodem, uzupełniający (szpitalny) i ojcowski są płatne 100%, a 9 nieprzenoszalnych tygodni drugiego rodzica 70%.</small><small>{plan.deadline_21_days ? `Najpóźniej do ${formatLongPl(plan.deadline_21_days)}` : `Wniosek do ${legislation.deadline_days_81_5} dni po porodzie`}</small></span><Badge tone="success">STABILNY</Badge></label>
-            <label className={`radio-card ${option === "100_70" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "100_70"} onChange={() => setOption("100_70")} /><span><strong>{splitLabel}</strong><small>{benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego"} {formatRate(legislation.rate_maternity)}, rodzicielski {formatRate(legislation.rate_parental)}</small></span></label>
-            {plan.deadline_21_days ? <p className="helper">Wniosek o {singleLabel} należy złożyć najpóźniej do <strong>{formatLongPl(plan.deadline_21_days)}</strong> ({legislation.deadline_days_81_5} dni po porodzie lub przyjęciu dziecka). Po przekroczeniu tego terminu nie można już wybrać wariantu {singleLabel}: obowiązuje {formatRate(legislation.rate_maternity)} + {formatRate(legislation.rate_parental)}. Przełączenie wariantu w kalkulatorze zostaje ręczne.</p> : null}
-          </div>}
-          {benefitKind !== "pregnancy" && employment === "uop" && (
-          <AdvancedSection title="Łączenie urlopu rodzicielskiego z pracą" active={etat > 0 || Number(combineWeeks) > 0}>
-            <div className={`label-line ${flash("etat")}`}><label htmlFor="work">Wymiar etatu (0–0,5)</label><strong>{etat.toLocaleString("pl-PL", { maximumFractionDigits: 1 })}</strong></div>
-            <input id="work" type="range" min="0" max="0.5" step="0.1" value={etat} onChange={(e) => onEtatChange(Number(e.target.value))} />
-            <div className={`field-group ${flash("combineWeeks")}`}><label htmlFor="combine-weeks">Tygodnie łączenia</label><input id="combine-weeks" type="number" min="0" max="134" step="1" value={combineWeeks} disabled={etat === 0} onChange={(e) => setCombineWeeks(e.target.value)} /></div>
-          </AdvancedSection>
-          )}
-          {employment === "jdg" || employment === "ustanie" ? (
-            <p className="helper">{employment === "jdg" ? "Przy działalności gospodarczej zasiłek wypłaca ZUS. Próg 20 ubezpieczonych nie zmienia płatnika, a zaświadczenie Z-3 nie jest wymagane." : "Po ustaniu zatrudnienia zasiłek wypłaca ZUS. Próg 20 ubezpieczonych nie ma tu znaczenia. Do wniosku dołącza się ZAM i dokument potwierdzający ustanie."}</p>
-          ) : (
-          <div className="two-fields">
-            <div className={`field-group ${flash("insured")}`}>
-              <label htmlFor="payer-size">Wielkość płatnika</label>
-              <select id="payer-size" value={insured > 20 ? "over" : "under"} onChange={(e) => onPayerSize(e.target.value)}>
-                <option value="under">Do 20 ubezpieczonych</option>
-                <option value="over">Powyżej 20 ubezpieczonych</option>
-              </select>
-            </div>
-            <div className={`field-group ${flash("insured")}`}><label htmlFor="insured-count">Liczba ubezpieczonych</label><input id="insured-count" type="number" min="0" value={insured} onChange={(e) => setInsured(Number(e.target.value) || 0)} /></div>
-          </div>
-          )}
-          {(employment === "jdg" || employment === "zlecenie") && (
-            <div className={`field-group ${flash("debt")}`}><label htmlFor="debt">Zadłużenie wobec ZUS (zł)</label><input id="debt" type="number" min="0" step="0.01" value={debt} onChange={(e) => setDebt(e.target.value)} /></div>
-          )}
           {employment === "uop" && <div className={`field-group ${flash("contractFte")}`}>
-            <label htmlFor="contract-fte">Wymiar etatu w umowie</label>
+            <label htmlFor="contract-fte">Etat w umowie</label>
             <select id="contract-fte" value={contractFte} onChange={(e) => setContractFte(e.target.value)}>
               <option value="1">Pełny etat</option>
               <option value="0.75">3/4 etatu</option>
@@ -1235,6 +1225,83 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
             <button type="button" className="import-button" onClick={importParsed}><Icon name="download" size={15} /> Importuj z symulacji ZUS / PDF</button>
             {imported && <p className={imported.startsWith("Wczytano") ? "import-note" : "form-error"}>{imported}</p>}
           </div>
+          {employment === "uop" || employment === "zlecenie" ? (
+            <div className={`field-group ${flash("insured")}`}><label htmlFor="insured-count">Liczba ubezpieczonych</label><input id="insured-count" type="number" min="0" value={insured} onChange={(e) => setInsured(Number(e.target.value) || 0)} /></div>
+          ) : null}
+          {(employment === "jdg" || employment === "zlecenie") && (
+            <div className={`field-group ${flash("debt")}`}><label htmlFor="debt">Zadłużenie wobec ZUS (zł)</label><input id="debt" type="number" min="0" step="0.01" value={debt} onChange={(e) => setDebt(e.target.value)} /><p className="helper">Zaległość powyżej 1% płacy minimalnej (48,06 zł w 2026 r.) wstrzymuje zasiłek do spłaty.</p></div>
+          )}
+          {(employment === "jdg" || employment === "zlecenie") && benefitKind !== "pregnancy" && (
+            <Toggle checked={insuredOnBirth} onChange={setInsuredOnBirth} label="Dobrowolne chorobowe trwa w dniu porodu" hint="Bez niego zasiłek macierzyński nie przysługuje." />
+          )}
+          {benefitKind === "birth" && (
+            <AdvancedSection title="Urlop przed porodem (art. 180 § 2–3 KP)" active={preWeeks > 0}>
+              <div className={`label-line ${flash("preWeeks")}`}><label htmlFor="pre-weeks">Tygodnie urlopu przed porodem (0–6)</label><strong>{preWeeks} tyg. · 100%</strong></div>
+              <input id="pre-weeks" type="range" min="0" max="6" step="1" value={preWeeks} onChange={(e) => setPreWeeks(Number(e.target.value))} />
+            </AdvancedSection>
+          )}
+          {benefitKind === "birth" && (
+            <AdvancedSection title="Hospitalizacja noworodka / wcześniactwo" active={Boolean(gestation || grams || hospitalDays || stayFrom || stayTo)} className={`${flash("gestation")} ${flash("grams")} ${flash("hospitalDays")}`}>
+              {Number(children) > 1 && <p className="helper">Poród mnogi: wymiar uzupełniającego urlopu macierzyńskiego ustala się na podstawie dziecka o najniższej masie urodzeniowej oraz najdłuższym okresie hospitalizacji.</p>}
+              <div className="triple-fields">
+                <div className="field-group"><label htmlFor="gestation">Tydzień ciąży</label><input id="gestation" type="number" min="20" max="42" value={gestation} onChange={(e) => setGestation(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="grams">Masa (g)</label><input id="grams" type="number" min="0" value={grams} onChange={(e) => setGrams(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="hospital-days">Dni w szpitalu</label><input id="hospital-days" type="number" min="0" value={hospitalDays} disabled={hospitalAuto} onChange={(e) => setHospitalDays(e.target.value)} />{hospitalAuto && <p className="helper">Pierwszy dzień pobytu musi wypaść między 5. a 28. dniem życia. Liczone są dni aż do końca 8. tygodnia (dzień 56).</p>}</div>
+              </div>
+              <div className="two-fields">
+                <div className="field-group"><label htmlFor="stay-from">Pobyt od dnia życia</label><input id="stay-from" type="number" min="1" max="28" value={stayFrom} onChange={(e) => setStayFrom(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="stay-to">Pobyt do dnia życia</label><input id="stay-to" type="number" min="1" max="56" value={stayTo} onChange={(e) => setStayTo(e.target.value)} /></div>
+              </div>
+              <p className="import-note">Uzupełniający urlop: {hospitalPreview} tyg. · 100%. Niepełny tydzień liczy się w górę. Urlop jest jednorazowy, a wniosek składa się co najmniej 21 dni przed końcem urlopu macierzyńskiego.</p>
+            </AdvancedSection>
+          )}
+          {benefitKind === "birth" && (
+            <AdvancedSection title="Urodzenie martwe lub zgon dziecka" active={childDeath}>
+              <Toggle checked={childDeath} onChange={setChildDeath} label="Dziecko urodziło się martwe albo zmarło" hint="Zasiłek pogrzebowy 7 000 zł, wniosek Z-12 w ciągu 12 miesięcy" />
+              {childDeath && (
+                <div className="two-fields">
+                  <div className="field-group"><label htmlFor="death-day">Dzień życia w chwili zgonu</label><input id="death-day" type="number" min="0" value={deathDay} onChange={(e) => setDeathDay(e.target.value)} /><p className="helper">0 oznacza urodzenie martwe. Przed 8. tygodniem: 8 tygodni po porodzie, nie krócej niż 7 dni od zgonu. Później: 7 dni od zgonu.</p></div>
+                  <div className="field-group"><label htmlFor="children-alive">Dzieci pozostałe przy życiu</label><input id="children-alive" type="number" min="0" max="5" value={childrenAlive} onChange={(e) => setChildrenAlive(e.target.value)} /></div>
+                </div>
+              )}
+            </AdvancedSection>
+          )}
+          {benefitKind === "pregnancy" && (
+            <div className={`law-block ${benefitKind === "pregnancy" ? "is-live" : ""}`}>
+              <h3>Ciąża, e-ZLA kod B i świadczenie rehabilitacyjne</h3>
+              <div className="triple-fields">
+                <div className={`field-group ${flash("insuredAge")}`}><label htmlFor="insured-age">Wiek ubezpieczonej</label><input id="insured-age" type="number" min="15" max="80" value={insuredAge} onChange={(e) => setInsuredAge(e.target.value)} /></div>
+                <div className={`field-group ${flash("sickDays")}`}><label htmlFor="sick-days">Dni niezdolności</label><input id="sick-days" type="number" min="0" max="400" value={sickDays} onChange={(e) => setSickDays(e.target.value)} /></div>
+                <div className={`field-group ${flash("rehabMonths")}`}><label htmlFor="rehab-months">Miesiące rehabilitacji</label><input id="rehab-months" type="number" min="0" max="12" value={rehabMonths} onChange={(e) => setRehabMonths(e.target.value)} /><p className="helper">Świadczenie rehabilitacyjne przysługuje dopiero po wyczerpaniu pełnego okresu zasiłkowego (270 dni L4).</p></div>
+              </div>
+              <Toggle className={flash("rehabPregnant")} checked={rehabPregnant} onChange={setRehabPregnant} label="Rehabilitacja nadal w ciąży" hint="100% podstawy. Poza ciążą: 90% przez 90 dni, potem 75%. Po 270 dniach bywa potrzebny formularz ZAS-53." />
+              <div className="two-fields">
+                <div className="field-group"><label htmlFor="prior-sick">Wcześniejsze dni L4 w tym okresie</label><input id="prior-sick" type="number" min="0" value={priorSickDays} onChange={(e) => setPriorSickDays(e.target.value)} /></div>
+                <div className="field-group"><label htmlFor="gap-b">Przerwa przed kodem B (dni)</label><input id="gap-b" type="number" min="0" value={gapBeforeCodeB} onChange={(e) => setGapBeforeCodeB(e.target.value)} /><p className="helper">Przerwa krótsza niż 61 dni i kolejne zwolnienie z kodem B zeruje licznik 270 dni.</p></div>
+              </div>
+              <div className="field-group"><label htmlFor="waiting">{employment === "uop" ? "Dni obowiązkowego ubezpieczenia (wyczekiwanie 30 dni)" : "Dni podlegania dobrowolnemu ubezpieczeniu (wyczekiwanie 90 dni)"}</label><input id="waiting" type="number" min="0" value={waitingDays} onChange={(e) => setWaitingDays(e.target.value)} /></div>
+              <div className="field-group"><label htmlFor="waiting-exception">Wyjątek od wyczekiwania</label><select id="waiting-exception" value={waitingException} onChange={(e) => setWaitingException(e.target.value)}><option value="">Brak wyjątku</option><option value="absolwent">Absolwent w ciągu 90 dni od szkoły</option><option value="10_lat">10 lat wcześniejszego obowiązkowego ubezpieczenia</option><option value="wypadek">Wypadek w drodze do pracy albo z pracy</option></select></div>
+            </div>
+          )}
+          {benefitKind !== "pregnancy" && (
+          <div className="toggle-box">
+            <Toggle className={flash("life")} checked={life} onChange={setLife} label="Zaświadczenie „Za życiem”" hint="Dłuższy urlop rodzicielski" />
+            {showPaternity && <Toggle className={flash("paternity")} checked={paternity} onChange={setPaternity} label="Urlop ojcowski" hint="14 dni, jednorazowo albo 2 części po 7 dni, 100%" />}
+            <Toggle className={flash("motherUnavailable")} checked={motherUnavailable} onChange={setMotherUnavailable} label="Matka nie może sprawować opieki" hint="Zostają jej 8 tygodni po porodzie. Resztę przejmuje ojciec." />
+          </div>
+          )}
+          {benefitKind !== "pregnancy" && <div className={`field-group ${flash("option")}`}>
+            <label>Wariant wypłaty</label>
+            <label className={`radio-card ${option === "81.5" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "81.5"} onChange={() => setOption("81.5")} /><span><strong>{singleLabel} przez cały okres</strong><small>{plan.deadline_21_days ? `Wniosek do ${formatLongPl(plan.deadline_21_days)}` : `Wniosek do ${legislation.deadline_days_81_5} dni po porodzie`}</small></span><Badge tone="success">STABILNY</Badge></label>
+            <label className={`radio-card ${option === "100_70" ? "selected" : ""}`}><input type="radio" name="variant" checked={option === "100_70"} onChange={() => setOption("100_70")} /><span><strong>{splitLabel}</strong><small>{benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego"} {formatRate(legislation.rate_maternity)}, rodzicielski {formatRate(legislation.rate_parental)}</small></span></label>
+          </div>}
+          {benefitKind !== "pregnancy" && employment === "uop" && (
+          <AdvancedSection title="Łączenie urlopu rodzicielskiego z pracą" active={etat > 0 || Number(combineWeeks) > 0}>
+            <div className={`label-line ${flash("etat")}`}><label htmlFor="work">Etat w pracy podczas urlopu</label><strong>{etat.toLocaleString("pl-PL", { maximumFractionDigits: 1 })} etatu</strong></div>
+            <input id="work" type="range" min="0" max="0.5" step="0.1" value={etat} onChange={(e) => onEtatChange(Number(e.target.value))} />
+            <div className={`field-group ${flash("combineWeeks")}`}><label htmlFor="combine-weeks">Tygodnie łączenia</label><input id="combine-weeks" type="number" min="0" max="134" step="1" value={combineWeeks} disabled={etat === 0} onChange={(e) => setCombineWeeks(e.target.value)} /></div>
+          </AdvancedSection>
+          )}
         </aside>
 
         <main className="results-panel">
@@ -1245,44 +1312,63 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
             <article className="kpi"><span>{plan.payer?.title ? `Płatnik: ${plan.payer.title}` : "Łączny czas opieki"}</span><strong className="tabular">{plan.total_weeks} tyg.{plan.total_extra_days ? ` ${plan.total_extra_days} dni` : ""}</strong><small>{plan.payer?.note || `ok. ${plan.total_months_approx} mies.`}</small></article>
           </div>
           {plan.entitled === false && <p className="form-error">{plan.denial_reason}</p>}
-          {plan.event === "ciaza_l4" && plan.pregnancy?.limit_days ? <p className="import-note">Okres zasiłkowy {plan.pregnancy.sick_days_paid} dni (pracodawca {plan.pregnancy.employer_days}, ZUS {plan.pregnancy.zus_sick_days}). Rehabilitacja {plan.pregnancy.rehab_days} dni.</p> : null}
-          {plan.notes?.map((note) => <p className="helper" key={note}>{note}</p>)}
+          {plan.notes?.filter((note) => !CHART_NOTES.test(note)).map((note) => <p className="helper" key={note}>{note}</p>)}
 
           {plan.event === "ciaza_l4" ? (
             <section className="timeline-card card">
-              <div className="timeline-head"><div><h3>Rozkład okresu chorobowego</h3><p>Wynagrodzenie chorobowe, zasiłek chorobowy i świadczenie rehabilitacyjne</p></div></div>
+              <div className="timeline-head"><div><h3>Rozkład okresu chorobowego</h3><p>{[
+                (plan.pregnancy?.employer_days ?? 0) > 0 ? `wynagrodzenie chorobowe ${plan.pregnancy?.employer_days} dni` : "",
+                (plan.pregnancy?.zus_sick_days ?? 0) > 0 ? `zasiłek chorobowy ${plan.pregnancy?.zus_sick_days} dni` : "",
+                (plan.pregnancy?.rehab_days ?? 0) > 0 ? `rehabilitacja ${plan.pregnancy?.rehab_days} dni` : "",
+              ].filter(Boolean).join(", ")}</p></div></div>
               <div className="timeline sick-track">
-                {(plan.pregnancy?.employer_days ?? 0) > 0 && <div className="timeline-block maternity" style={{ width: `${((plan.pregnancy?.employer_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Wynagrodzenie chorobowe pracodawcy</strong><span>{plan.pregnancy?.employer_days} dni · 100%</span></div>}
-                {(plan.pregnancy?.zus_sick_days ?? 0) > 0 && <div className="timeline-block parental" style={{ width: `${((plan.pregnancy?.zus_sick_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Zasiłek chorobowy ZUS</strong><span>do 270 dni · 100%</span></div>}
-                {(plan.pregnancy?.rehab_days ?? 0) > 0 && <div className="timeline-block father" style={{ width: `${((plan.pregnancy?.rehab_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Świadczenie rehabilitacyjne</strong><span>{plan.pregnancy?.rehab_in_pregnancy === false ? "90% / 75%" : "100%"}</span></div>}
+                {(plan.pregnancy?.employer_days ?? 0) > 0 && <div className="timeline-block maternity" style={{ width: `${((plan.pregnancy?.employer_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Wynagrodzenie chorobowe</strong><span>{plan.pregnancy?.employer_days} dni · 100%</span></div>}
+                {(plan.pregnancy?.zus_sick_days ?? 0) > 0 && <div className="timeline-block parental" style={{ width: `${((plan.pregnancy?.zus_sick_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Zasiłek chorobowy</strong><span>{plan.pregnancy?.zus_sick_days} dni · 100%</span></div>}
+                {(plan.pregnancy?.rehab_days ?? 0) > 0 && <div className="timeline-block full" style={{ width: `${((plan.pregnancy?.rehab_days ?? 0) / Math.max(1, (plan.pregnancy?.employer_days ?? 0) + (plan.pregnancy?.zus_sick_days ?? 0) + (plan.pregnancy?.rehab_days ?? 0))) * 100}%` }}><strong>Rehabilitacja</strong><span>{plan.pregnancy?.rehab_days} dni · {plan.pregnancy?.rehab_in_pregnancy === false ? "90% / 75%" : "100%"}</span></div>}
               </div>
             </section>
           ) : (
           <section className="timeline-card card">
-            <div className="timeline-head"><div><h3>Podział opieki: Matka + Ojciec</h3><p>Wymiary z silnika zasiłków, w tym 9 tygodni tylko dla drugiego rodzica</p></div><Badge tone="info">{childCount} {childCount === 1 ? "DZIECKO" : "DZIECI"}</Badge></div>
-            <div className="timeline-legend"><span><i className="mama" /> Matka</span><span><i className="tata" /> Ojciec</span><span><i className="shared" /> Do podziału</span></div>
-            <div className="parent-row">
-              <div className="parent-label"><div className="avatar mama-avatar">{initials(plan.parents?.mother || parentName || "Matka")}</div><div><strong>{role === "opiekun" ? "Opiekun" : "Matka"}</strong><span>{plan.parents?.mother || parentName || "Matka"}</span></div></div>
-              <div className="timeline">
-                {motherUnavailable && preSpan > 0 && <div className="timeline-block maternity" style={{ width: pct(preSpan) }}><strong>Przed porodem</strong><span>{preSpan} tyg. · 100%</span></div>}
-                {motherUnavailable && postSpan > 0 && <div className="timeline-offset" style={{ width: pct(postSpan) }} />}
-                {!motherUnavailable && maternitySpan > 0 && <div className="timeline-block maternity" style={{ width: pct(maternitySpan) }}><strong>{benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego"}</strong><span>{maternitySpan} tyg. · {maternityRate}</span></div>}
-                {motherShare > 0 && <div className="timeline-block parental" style={{ width: pct(motherShare) }}><strong>Rodzicielski</strong><span>{motherShare} tyg.</span></div>}
-                <div className="timeline-empty" />
-              </div>
+            <div className="timeline-head"><div><h3>Kolejność świadczeń</h3><p>{["mother", "father"].map((who) => {
+              const own = chart.bars.filter((bar) => bar.who === who).sort((a, b) => a.start - b.start);
+              if (!own.length) return "";
+              const name = who === "mother" ? (role === "opiekun" ? "Opiekun" : "Matka") : "Ojciec";
+              return `${name}: ${own.map((bar) => `${bar.label} ${bar.detail}`).join(", potem ")}`;
+            }).filter(Boolean).join(". ")}</p></div><Badge tone="info">{childCount} {childCount === 1 ? "DZIECKO" : "DZIECI"}</Badge></div>
+            <div className="timeline-legend">
+              {([
+                ["full", "100%"],
+                ["maternity", benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego"],
+                ["parental", "Rodzicielski"],
+                ["father", "70%"],
+                ["reduced", "Praca w trakcie urlopu"],
+              ] as const).filter(([tone]) => chart.bars.some((bar) => bar.tone === tone)).map(([tone, label]) => <span key={tone}><i className={tone} /> {label}</span>)}
             </div>
-            <div className="parent-row">
-              <div className="parent-label"><div className="avatar tata-avatar">{initials(plan.parents?.father || secondParent || "Ojciec")}</div><div><strong>Ojciec</strong><span>{plan.parents?.father || secondParent || "Ojciec"}</span></div></div>
-              <div className="timeline">
-                <div className="timeline-offset" style={{ width: pct(motherUnavailable ? preSpan : maternitySpan) }} />
-                {motherUnavailable && postSpan > 0 && <div className="timeline-block maternity" style={{ width: pct(postSpan) }}><strong>{benefitKind === "birth" ? "Macierzyński" : "Na warunkach macierzyńskiego"}</strong><span>{postSpan} tyg. · {maternityRate}</span></div>}
-                {fatherShare > 0 && <div className="timeline-block father" style={{ width: pct(fatherShare) }}><strong>{fatherShare} tyg.</strong><span>70%</span></div>}
-                {breakdown.paternity_weeks > 0 && <div className="timeline-block paternity" style={{ width: pct(breakdown.paternity_weeks) }}><strong>{breakdown.paternity_weeks} tyg.</strong><span>ojcowski</span></div>}
-              </div>
+            {(["mother", "father"] as const).map((who) => {
+              const own = chart.bars.filter((bar) => bar.who === who);
+              const lanes = Math.max(1, own.reduce((max, bar) => Math.max(max, bar.lane + 1), 1));
+              const name = who === "mother" ? (plan.parents?.mother || parentName || (role === "opiekun" ? "Opiekun" : "Matka")) : (plan.parents?.father || secondParent || "Ojciec");
+              const title = who === "mother" ? (role === "opiekun" ? "Opiekun" : "Matka") : "Ojciec";
+              return (
+                <div className="parent-row" key={who}>
+                  <div className="parent-label"><div className={`avatar ${who === "mother" ? "mama-avatar" : "tata-avatar"}`}>{initials(name)}</div><div><strong>{title}</strong><span>{name}</span></div></div>
+                  <div className="timeline-track" style={{ height: lanes > 1 ? lanes * 32 : 58 }}>
+                    {chart.axisStart < 0 && <i className="birth-mark" style={{ left: `${((0 - chart.axisStart) / chart.span) * 100}%` }} />}
+                    {own.map((bar) => (
+                      <div key={bar.key} className={`timeline-block ${bar.tone}`} title={`${bar.label}: ${bar.detail}`} style={{ left: `${((bar.start - chart.axisStart) / chart.span) * 100}%`, width: `${(bar.length / chart.span) * 100}%`, top: lanes > 1 ? bar.lane * 32 : 0, height: lanes > 1 ? 30 : "100%" }}>
+                        <strong>{bar.label}</strong>
+                        <span>{bar.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="timeline-scale track-scale">
+              <span style={{ left: chart.axisStart < 0 ? "0%" : `${((0 - chart.axisStart) / chart.span) * 100}%` }}>{chart.axisStart < 0 ? `${Math.abs(chart.axisStart)} tyg. przed` : (benefitKind === "birth" ? "Poród" : "Przyjęcie")}</span>
+              {chart.axisStart < 0 && <span style={{ left: `${((0 - chart.axisStart) / chart.span) * 100}%` }}>{benefitKind === "birth" ? "Poród" : "Przyjęcie"}</span>}
+              <span className="scale-end">Koniec</span>
             </div>
-            <div className="timeline-scale"><span>{benefitKind === "birth" ? "Poród" : "Przyjęcie"}</span><span>{maternitySpan} tyg.</span><span>{maternitySpan + motherShare} tyg.</span><span>{span} tyg.</span></div>
-            <p className="helper">Symulacja układa urlop ciągiem. W praktyce urlop rodzicielski możesz wykorzystać jednorazowo albo podzielić maksymalnie na 5 części — aż do zakończenia roku kalendarzowego, w którym dziecko kończy 6 lat.</p>
-            <div className="quota-note"><Icon name="info" size={18} /><span><strong>9 tygodni jest wyłączne dla drugiego rodzica.</strong> Niewykorzystana część nie przechodzi na pierwszego rodzica. Urlop rodzicielski można podzielić na maksymalnie 5 części do końca roku, w którym dziecko kończy 6 lat.</span></div>
           </section>
           )}
 
@@ -1306,7 +1392,7 @@ function CalculatorView({ scenario, legislation, pdfCase, transfer, onDemoIdenti
         </main>
       </div>
       <section className="next-step">
-        <div><span className="step-number">3</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Wniosek z tego planu</h3><p>Imię, data, wariant i płatnik przejdą do checklisty oraz pliku kalendarza.</p></div></div>
+        <div><span className="step-number">03</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Wniosek z tego planu</h3><p>Imię, data, wariant i płatnik przejdą do checklisty oraz pliku kalendarza.</p></div></div>
         <Button onClick={() => goTo("documents")} icon="arrow">Przejdź do wniosku ZAM i dokumentów</Button>
       </section>
       <div className="mobile-summary"><span><small>Szacunkowo netto / mies.</small><strong>{pln(plan.monthly_net)}</strong></span><button type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>Zmień dane</button></div>
@@ -1378,7 +1464,7 @@ function PdfView({ onParsed, onCalculate }: { onParsed: (item: PdfCase) => void;
 
   return (
     <>
-      <PageIntro step="MODUŁ TESTOWY · WERYFIKACJA DOKUMENTÓW" title="Weryfikator spraw PDF" description="Wgraj dokumenty lub wybierz przypadek testowy. System odczyta dane, sprawdzi kompletność i przygotuje symulację rozstrzygnięcia.">
+      <PageIntro step="Weryfikacja dokumentów" title="Weryfikator spraw PDF" description="Wgraj dokumenty lub wybierz przypadek testowy. System odczyta dane, sprawdzi kompletność i przygotuje symulację rozstrzygnięcia.">
         <AiInfo focus="pdf" />
       </PageIntro>
       <section className="upload-card card" style={busy ? { opacity: 0.72 } : undefined}>
@@ -1418,13 +1504,13 @@ function PdfView({ onParsed, onCalculate }: { onParsed: (item: PdfCase) => void;
           <p className="decision-lead">{result.decision.subtitle}</p>
           <div className="decision-value"><span>Prognozowana miesięczna kwota brutto</span><strong className="tabular">{result.decision.monthly_gross}</strong><small>{result.decision.rate_note}</small></div>
           <div className="legal-basis"><strong>Uzasadnienie i podstawa prawna</strong><p>{result.decision.legal_basis}</p><a href="https://isap.sejm.gov.pl/isap.nsf/DocDetails.xsp?id=WDU19990600636" target="_blank" rel="noopener noreferrer">Ustawa zasiłkowa · tekst obowiązujący w 2026 r. <Icon name="external" size={14} /></a></div>
-          <div className="decision-actions"><Button icon="download" disabled={exporting} onClick={() => void downloadReport()}>{exporting ? "Przygotowuję PDF…" : "Pobierz raport"}</Button><Button variant="secondary" onClick={() => onCalculate(result)}>Przenieś dane do kalkulatora i policz</Button></div>
+          <div className="decision-actions"><Button icon="download" disabled={exporting} onClick={() => void downloadReport()}>{exporting ? "Przygotowuję PDF…" : "Pobierz raport"}</Button></div>
           {exportNote && <p className="export-note">{exportNote}</p>}
           <p className="disclaimer"><Icon name="info" size={14} /> To symulacja, nie decyzja administracyjna ZUS.</p>
         </section>
       </div>
       <section className="next-step">
-        <div><span className="step-number">2</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Policz świadczenie z tego dokumentu</h3><p>Odczytane imię, data, podstawa i wariant wejdą do kalkulatora. Puste pola zostaną puste.</p></div></div>
+        <div><span className="step-number">02</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Policz świadczenie z tego dokumentu</h3><p>Odczytane imię, data, podstawa i wariant wejdą do kalkulatora. Puste pola zostaną puste.</p></div></div>
         <Button onClick={() => onCalculate(result)} icon="calculator">Przenieś dane do kalkulatora i policz</Button>
       </section>
     </>
@@ -1453,12 +1539,12 @@ function eventDocument(kind: string) {
 
 function certificateDocument(employment: string, forms: string[]) {
   const has = (name: string) => forms.some((item) => item.includes(name));
-  if (employment === "jdg") return { title: "Zaświadczenie Z-3", text: "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zniesiony 24.10.2026 r.", status: "Nie dotyczy — wniosek ZAM do ZUS", tone: "success" as const };
-  if (employment === "ustanie") return { title: "Dokument potwierdzający ustanie zatrudnienia", text: "Do wniosku ZAM dołączasz dokument potwierdzający ustanie zatrudnienia.", status: "Wymagane do ZUS", tone: "warning" as const };
+  if (employment === "jdg") return { title: "Zaświadczenie Z-3", text: "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b zniesiono 24.10.2026 r. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", status: "Nie dotyczy — wniosek ZAM do ZUS", tone: "success" as const };
+  if (employment === "ustanie") return { title: "Dokument potwierdzający ustanie zatrudnienia", text: "Do wniosku ZAM dołączasz dokument potwierdzający ustanie zatrudnienia. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", status: "Wymagane do ZUS", tone: "warning" as const };
   if (employment === "zlecenie") {
     return has("Z-3a")
-      ? { title: "Zaświadczenie płatnika Z-3a", text: "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek.", status: "Wymagane do ZUS", tone: "warning" as const }
-      : { title: "Zaświadczenie płatnika Z-3a", text: "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.", status: "Nie dotyczy — wypłaca zleceniodawca", tone: "success" as const };
+      ? { title: "Zaświadczenie płatnika Z-3a", text: "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", status: "Wymagane do ZUS", tone: "warning" as const }
+      : { title: "Zaświadczenie płatnika Z-3a", text: "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", status: "Nie dotyczy — wypłaca zleceniodawca", tone: "success" as const };
   }
   return has("Z-3")
     ? { title: "Zaświadczenie płatnika Z-3", text: "Pracodawca przekazuje do ZUS zaświadczenie Z-3.", status: "Wymagane do ZUS", tone: "warning" as const }
@@ -1518,7 +1604,7 @@ function ChecklistAttach({ fileName, onPick, onClear }: { fileName?: string; onP
   );
 }
 
-function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, onInquire, files, setFiles, sent, setSent }: { scenario: Scenario; legislation: LegislationParams; filed: FiledPlan | null; goTo: (view: View) => void; anonymous?: boolean; onInquire: () => void; files: ChecklistFiles; setFiles: Dispatch<SetStateAction<ChecklistFiles>>; sent: ChecklistSent; setSent: Dispatch<SetStateAction<ChecklistSent>> }) {
+function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, files, setFiles, sent, setSent }: { scenario: Scenario; legislation: LegislationParams; filed: FiledPlan | null; goTo: (view: View) => void; anonymous?: boolean; files: ChecklistFiles; setFiles: Dispatch<SetStateAction<ChecklistFiles>>; sent: ChecklistSent; setSent: Dispatch<SetStateAction<ChecklistSent>> }) {
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState("");
   const [wizard, setWizard] = useState<ChecklistKind | null>(null);
@@ -1528,7 +1614,7 @@ function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, 
   const isContract = employment === "zlecenie";
   const isEnd = employment === "ustanie";
   const isZus = usingPlan ? filed!.isZus : scenario.benefit_payer.is_zus;
-  const forms = usingPlan ? filed!.forms : isJdg ? ["ZAM do ZUS"] : isEnd ? ["ZAM", "Dokument potwierdzający ustanie zatrudnienia"] : isContract ? (isZus ? ["Z-3a"] : []) : isZus ? ["Z-3"] : [];
+  const forms = usingPlan ? filed!.forms : isJdg ? ["ZAM do ZUS", "ZUR", "ZAO"] : isEnd ? ["ZAM", "ZUR", "ZAO", "Dokument potwierdzający ustanie zatrudnienia"] : isContract ? (isZus ? ["Z-3a", "ZAM", "ZUR", "ZAO"] : ["ZAM", "ZUR", "ZAO"]) : isZus ? ["Z-3"] : [];
   const benefitKind = usingPlan ? filed!.benefitKind : "birth";
   const certificate = certificateDocument(employment, forms);
   const eventDoc = eventDocument(benefitKind);
@@ -1550,14 +1636,14 @@ function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, 
   const maternityWeeks = usingPlan ? filed!.maternityWeeks : legislation.maternity_weeks_single;
   const parentalWeeks = usingPlan ? filed!.parentalWeeks : legislation.parental_weeks_single;
   const documents: { title: string; text: string; status: string; tone: "success" | "warning" | "danger" | "info" | "neutral"; wizard: "zam" | "leave" | "birth" | "attachment"; primary?: boolean }[] = [
-    { title: "Wniosek ZAM", text: "Zasiłek macierzyński, rodzicielski lub ojcowski", status: sent.zam ? "WYSŁANO (UPO wygenerowane)" : "Gotowy do wypełnienia", tone: "success", wizard: "zam", primary: true },
+    { title: "Wniosek ZAM", text: noLabourLeave ? "Zasiłek macierzyński. Za urlop rodzicielski składa się ZUR, a za urlop ojcowski ZAO." : "Zasiłek macierzyński.", status: sent.zam ? "WYSŁANO (UPO wygenerowane)" : "Gotowy do wypełnienia", tone: "success", wizard: "zam", primary: true },
     { title: certificate.title, text: certificate.text, status: certificate.status, tone: certificate.tone, wizard: "attachment" },
     { title: "Wniosek o urlop do pracodawcy", text: noLabourLeave ? "Przy tej formie zatrudnienia nie składa się wniosku o urlop z Kodeksu pracy." : "Oddzielny od wniosku o wypłatę zasiłku", status: noLabourLeave ? "Nie dotyczy (brak urlopu z KP — przysługuje zasiłek z ZUS)" : sent.leave ? "WYSŁANO (UPO wygenerowane)" : "Wymaga podpisu", tone: noLabourLeave ? "neutral" : sent.leave ? "success" : "warning", wizard: "leave" },
     { title: eventDoc.title, text: eventDoc.text, status: sent.birth ? "WNIOSEK ZŁOŻONY" : "Do potwierdzenia", tone: sent.birth ? "success" : "neutral", wizard: "birth" },
   ];
   return (
     <>
-      <PageIntro step="KROK 3 Z 4 · DOKUMENTY I TERMINY" title="Właściwy dokument, we właściwym miejscu" description={usingPlan ? (applicant ? `Wniosek jest uzupełniony z kalkulatora: ${applicant}, ${dueCaption.toLowerCase()} ${formatPlDate(due)}, ${variantText}, płatnik ${payerTitle}.` : `Plan z kalkulatora jest gotowy: ${dueCaption.toLowerCase()} ${formatPlDate(due)}, ${variantText}, płatnik ${payerTitle}. Imię i nazwisko uzupełnisz w kalkulatorze albo wybierzesz preset.`) : (anonymous ? "Parametry wybranej formy zatrudnienia. Imię i nazwisko nie są podstawiane — wpisz je w kalkulatorze albo wybierz preset." : `Na razie widać scenariusz ze startu (${scenario.user_name}). Po policzeniu planu w kalkulatorze te pola podstawią się same.`)}>
+      <PageIntro step="Dokumenty i terminy" title="Właściwy dokument, we właściwym miejscu" description={usingPlan ? (applicant ? `Wniosek jest uzupełniony z kalkulatora: ${applicant}, ${dueCaption.toLowerCase()} ${formatPlDate(due)}, ${variantText}, płatnik ${payerTitle}.` : `Plan z kalkulatora jest gotowy: ${dueCaption.toLowerCase()} ${formatPlDate(due)}, ${variantText}, płatnik ${payerTitle}. Imię i nazwisko uzupełnisz w kalkulatorze albo wybierzesz preset.`) : (anonymous ? "Parametry wybranej formy zatrudnienia. Imię i nazwisko nie są podstawiane — wpisz je w kalkulatorze albo wybierz preset." : `Na razie widać scenariusz ze startu (${scenario.user_name}). Po policzeniu planu w kalkulatorze te pola podstawią się same.`)}>
         <div className="intro-actions">
           <Button icon="clipboard" disabled={exporting} onClick={() => void (async () => {
             setExporting(true);
@@ -1570,7 +1656,6 @@ function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, 
             }
           })()}>{exporting ? "Przygotowuję PDF…" : "Utwórz checklistę PDF"}</Button>
           {exportNote && <p className="export-note">{exportNote}</p>}
-          <Button variant="secondary" onClick={onInquire}>Wyślij zapytanie do PUE/eZUS</Button>
         </div>
       </PageIntro>
       <section className="routing-card card">
@@ -1582,7 +1667,7 @@ function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, 
         </div>
         <div className="alternate-route"><span>Ścieżka dla tego scenariusza:</span><strong>Ty</strong><Icon name="arrow" size={14} /><strong>{isEnd ? "ZUS · ZAM i dokument ustania" : isJdg ? "ZUS · ZAM bez Z-3" : isContract ? (isZus ? "Z-3a → ZUS" : "Zleceniodawca") : isZus ? "Z-3 → ZUS" : "Pracodawca"}</strong><Icon name="arrow" size={14} /><strong>Wypłata</strong></div>
       </section>
-      <div className="legislative-callout"><div className="callout-icon"><Icon name="info" /></div><div><Badge tone="info">AKTUALIZACJA 2026</Badge><h3>Zmiana od 24.10.2026 r.</h3><p>Formularze ZUR, ZAO oraz Z-3b zostały zlikwidowane. Wnioski o zasiłek macierzyński, rodzicielski i ojcowski składasz na zunifikowanym formularzu <strong>ZAM</strong>.</p></div><a href="https://www.zus.pl/swiadczenia/zasilki/zasilek-macierzynski" target="_blank" rel="noopener noreferrer">Sprawdź komunikat ZUS <Icon name="external" size={14} /></a></div>
+      <div className="legislative-callout"><div className="callout-icon"><Icon name="info" /></div><div><Badge tone="info">AKTUALIZACJA 2026</Badge><h3>Zmiana od 24.10.2026 r.</h3><p>Zniesiono wyłącznie formularz <strong>Z-3b</strong> (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). Zasiłek macierzyński składa się na <strong>ZAM</strong>. Przy działalności, umowie zlecenia i po ustaniu zatrudnienia zasiłek za okres urlopu rodzicielskiego składa się na <strong>ZUR</strong>, a za okres urlopu ojcowskiego na <strong>ZAO</strong>. Do kompletu dochodzą: zaświadczenie lekarskie o przewidywanej dacie porodu, odpis skrócony aktu urodzenia albo dane z USC, oświadczenie drugiego rodzica oraz — przy zgonie — wniosek <strong>Z-12</strong> o zasiłek pogrzebowy 7 000 zł. Z-15A i Z-15B dotyczą zasiłku rodzinnego, a ZAS-53 świadczenia rehabilitacyjnego. Ten kalkulator ich nie liczy.</p></div><a href="https://www.zus.pl/swiadczenia/zasilki/zasilek-macierzynski" target="_blank" rel="noopener noreferrer">Sprawdź komunikat ZUS <Icon name="external" size={14} /></a></div>
       <section className="checklist-section">
         <SectionHeader eyebrow="TWOJA CHECKLISTA" title="4 kroki do złożenia wniosku" description={`Lista dopasowana do płatnika: ${payerTitle}.`} />
         <div className="document-list">{documents.map((doc, index) => {
@@ -1617,7 +1702,7 @@ function DocumentsView({ scenario, legislation, filed, goTo, anonymous = false, 
       <section className="deadline-card card"><div><span className="deadline-icon"><Icon name="calendar" /></span><div><p className="eyebrow">NAJWAŻNIEJSZY TERMIN</p><h3>Do {formatLongPl(deadlineIso)}</h3><p>{usingPlan && filed!.option !== "81.5" ? `Wybrany wariant to ${variantText}. Ostatni dzień na wybór ${singleRate} to ${formatLongPl(deadlineIso)} (${dueCaption.toLowerCase()}: ${formatPlDate(due)}).` : `Złóż wniosek o wariant ${variantText} do ${formatLongPl(deadlineIso)} (${dueCaption.toLowerCase()}: ${formatPlDate(due)}).`}</p></div></div><Button variant="secondary" onClick={() => downloadDeadline(deadlineIso, usingPlan && filed!.option !== "81.5" ? singleRate : variantText, legislation.deadline_days_81_5, benefitKind)}>Dodaj do kalendarza</Button></section>
       <div className="official-links"><span>Oficjalne źródła:</span><a href="https://www.zus.pl" target="_blank" rel="noopener noreferrer">zus.pl <Icon name="external" size={12} /></a><a href="https://www.gov.pl/web/rodzina/urlop-rodzicielski" target="_blank" rel="noopener noreferrer">urlop rodzicielski <Icon name="external" size={12} /></a><a href="https://www.pip.gov.pl/dla-pracodawcow/porady-prawne/rodzicielstwo" target="_blank" rel="noopener noreferrer">PIP · rodzicielstwo <Icon name="external" size={12} /></a></div>
       <section className="next-step">
-        <div><span className="step-number">4</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Gdy sytuacja jest trudniejsza</h3><p>Organizacje i wyjątki, których nie widać w samym wniosku.</p></div></div>
+        <div><span className="step-number">05</span><div><p className="eyebrow">NASTĘPNY KROK</p><h3>Gdy sytuacja jest trudniejsza</h3><p>Organizacje i wyjątki, których nie widać w samym wniosku.</p></div></div>
         <Button onClick={() => goTo("support")} icon="arrow">Przejdź do strefy wsparcia</Button>
       </section>
       {wizard && <DocumentWizard kind={wizard} applicant={applicant} personCaption={personCaption} employmentText={employmentText} payerTitle={payerTitle} isZus={isZus} isJdg={isJdg} base={base} due={due} dueCaption={dueCaption} variantText={variantText} leaveName={leaveName} maternityWeeks={maternityWeeks} parentalWeeks={parentalWeeks} eventTitle={eventDoc.title} attachmentTitle={certificate.title} benefitKind={benefitKind} noLabourLeave={noLabourLeave} attachedName={files[wizard]} onClose={() => setWizard(null)} onSent={(kind) => setSent((current) => ({ ...current, [kind]: true }))} />}
@@ -1756,7 +1841,7 @@ function SupportView({ goTo, legislation, onLegislation, onInquire }: { goTo: (v
       </PageIntro>
       <section className="support-hero"><div className="support-heart"><Icon name="heart" size={25} /></div><div><h2>W sytuacji trudnej zacznij od tego, co najważniejsze</h2><p>Wybierz temat. Pokażemy świadczenia, dokumenty i kontakty bez prawniczego żargonu.</p></div></section>
       <div className="hardship-grid">
-        <article className="hardship-card card"><span className="topic-icon rose"><Icon name="heart" /></span><Badge tone="neutral">STRATA DZIECKA</Badge><h3>Urodzenie martwego dziecka lub zgon dziecka</h3><p>Prawo do zasiłku za okres 8 tygodni po porodzie, nie krócej niż przez 7 dni od dnia zgonu dziecka — zależnie od sytuacji prawnej.</p><button type="button" className="text-link" onClick={() => goTo("documents")}>Zobacz przewodnik krok po kroku <Icon name="arrow" size={14} /></button></article>
+        <article className="hardship-card card"><span className="topic-icon rose"><Icon name="heart" /></span><Badge tone="neutral">STRATA DZIECKA</Badge><h3>Urodzenie martwego dziecka lub zgon dziecka</h3><p>Przed ukończeniem 8 tygodni życia zasiłek macierzyński obejmuje 8 tygodni po porodzie i nie może być krótszy niż 7 dni od zgonu. Po 8. tygodniu przysługuje 7 dni od zgonu. Przy ciąży mnogiej wymiar zależy od liczby dzieci, które zostały przy życiu. Zasiłek pogrzebowy to 7 000 zł, a wniosek Z-12 składa się w ciągu 12 miesięcy.</p><button type="button" className="text-link" onClick={() => goTo("calculator")}>Policz ten wymiar w kalkulatorze <Icon name="arrow" size={14} /></button></article>
         <article className="hardship-card card"><span className="topic-icon blue"><Icon name="clock" /></span><Badge tone="info">WCZEŚNIACTWO</Badge><h3>Przedwczesny poród i hospitalizacja</h3><p>Uzupełniający urlop macierzyński zależy m.in. od tygodnia ciąży, masy urodzeniowej i czasu pobytu dziecka w szpitalu.</p><button type="button" className="text-link" onClick={() => goTo("calculator")}>Oblicz dodatkowy okres <Icon name="arrow" size={14} /></button></article>
         <article className="hardship-card card"><span className="topic-icon green-bg"><Icon name="shield" /></span><Badge tone="success">ZA ŻYCIEM</Badge><h3>Ciężka choroba lub niepełnosprawność dziecka</h3><p>Zaświadczenie „Za życiem” wydłuża wymiar urlopu rodzicielskiego do 65 tygodni przy jednym dziecku lub 67 przy porodzie mnogim.</p><button type="button" className="text-link" onClick={() => goTo("calculator")}>Sprawdź należne świadczenia w kalkulatorze <Icon name="arrow" size={14} /></button></article>
       </div>
@@ -2173,6 +2258,13 @@ export default function App() {
     if (checklistFormKey.current && checklistFormKey.current !== key) clearChecklist();
     checklistFormKey.current = key;
   }, [calcForm, clearChecklist]);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${fontScale * 100}%`;
+    return () => {
+      document.documentElement.style.fontSize = "";
+    };
+  }, [fontScale]);
   const usePdfInCalculator = useCallback((item: PdfCase) => {
     setPdfCase(item);
     setTransfer({ token: Date.now(), item });
@@ -2254,13 +2346,13 @@ export default function App() {
   };
 
   return (
-    <div className={`app official-app ${contrast ? "high-contrast" : ""}`} style={{ fontSize: `${fontScale}rem` }}>
+    <div className={`app official-app ${contrast ? "high-contrast" : ""}`}>
       <header>
         <div className="utility-strip">
           <div className="shell utility-shell">
             <div className="utility-links"><a href="#main-content">Przejdź do treści</a><button type="button" className="mock-header-control" title="Element makiety nagłówka PUE/eZUS (niedostępny w wersji demonstracyjnej)">Deklaracja dostępności</button><button type="button" className="mock-header-control" title="Element makiety nagłówka PUE/eZUS (niedostępny w wersji demonstracyjnej)">BIP <span>(Biuletyn Informacji Publicznej)</span></button></div>
             <div className="accessibility-tools">
-              <div className="official-font-controls" aria-label="Zmiana rozmiaru tekstu"><button onClick={() => setFontScale(.94)}>A−</button><button className={fontScale === 1 ? "active" : ""} onClick={() => setFontScale(1)}>A</button><button onClick={() => setFontScale(1.06)}>A+</button></div>
+              <div className="official-font-controls" aria-label="Zmiana rozmiaru tekstu"><button type="button" className={fontScale === 0.875 ? "active" : ""} aria-pressed={fontScale === 0.875} onClick={() => setFontScale(0.875)}>A−</button><button type="button" className={fontScale === 1 ? "active" : ""} aria-pressed={fontScale === 1} onClick={() => setFontScale(1)}>A</button><button type="button" className={fontScale === 1.125 ? "active" : ""} aria-pressed={fontScale === 1.125} onClick={() => setFontScale(1.125)}>A+</button></div>
               <button className={`contrast-toggle ${contrast ? "active" : ""}`} onClick={() => setContrast(!contrast)}><span>◐</span> Wersja kontrastowa</button>
               <span className="language-lock" title="Interfejs jest po polsku. Tłumaczenia EN i UA nie są w tej wersji.">PL</span>
               <div className="eu-badge"><span className="eu-stars">✦</span><div><strong>Fundusze Europejskie</strong><small>Rzeczpospolita Polska</small></div></div>
@@ -2302,7 +2394,7 @@ export default function App() {
           </div>
         </div>}
         {authenticated && <nav className="main-nav">
-          <div className="shell nav-shell">{navItems.map((item, index) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><span className="nav-icon"><Icon name={item.icon} size={18} /></span><span className="nav-number">0{index + 1}</span><span className="nav-label">{item.label}</span><span className="nav-short">{item.short}</span></button>)}</div>
+          <div className="shell nav-shell">{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><span className="nav-icon"><Icon name={item.icon} size={18} /></span><span className="nav-label">{item.label}</span><span className="nav-short">{item.short}</span></button>)}</div>
         </nav>}
       </header>
       {authenticated ? (
@@ -2312,7 +2404,7 @@ export default function App() {
             {view === "status" && <StatusView goTo={setView} scenario={scenario} legislation={legislation} anonymous={anonymous} onLogin={() => setAuthStep("login-gov-mobywatel")} onInquire={() => setPueOpen(true)} />}
             {view === "calculator" && <CalculatorView scenario={scenario} legislation={legislation} pdfCase={pdfCase} transfer={transfer} onDemoIdentity={onDemoIdentity} onFiledCase={onFiledCase} onResetChecklist={clearChecklist} goTo={setView} anonymous={anonymous} form={calcForm} setForm={setCalcForm} presetId={activePresetId} setPresetId={setActivePresetId} showSchedule={showSchedule} setShowSchedule={setShowSchedule} seenTransfer={seenTransfer} />}
             {view === "pdf" && <PdfView onParsed={setPdfCase} onCalculate={usePdfInCalculator} />}
-            {view === "documents" && <DocumentsView scenario={scenario} legislation={legislation} filed={filedPlan} goTo={setView} anonymous={anonymous} onInquire={() => setPueOpen(true)} files={checklistFiles} setFiles={setChecklistFiles} sent={checklistSent} setSent={setChecklistSent} />}
+            {view === "documents" && <DocumentsView scenario={scenario} legislation={legislation} filed={filedPlan} goTo={setView} anonymous={anonymous} files={checklistFiles} setFiles={setChecklistFiles} sent={checklistSent} setSent={setChecklistSent} />}
             {view === "support" && <SupportView goTo={setView} legislation={legislation} onLegislation={setLegislation} onInquire={() => setPueOpen(true)} />}
             {pueOpen && <PueInquiry scenario={scenario} anonymous={anonymous} onClose={() => setPueOpen(false)} />}
           </div>

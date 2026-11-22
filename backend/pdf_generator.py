@@ -386,7 +386,7 @@ def checklist_context(scenario: Dict[str, Any]) -> Dict[str, Any]:
     except ValueError:
         deadline = due
     if is_jdg:
-        certificate = ("Zaświadczenie płatnika Z-3", "Przy działalności gospodarczej zaświadczenie Z-3 nie jest wymagane.", "Nie jest wymagane")
+        certificate = ("Zaświadczenie płatnika Z-3", "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b zniesiono 24.10.2026 r. Zasiłek za urlop rodzicielski: ZUR. Zasiłek za urlop ojcowski: ZAO.", "Nie dotyczy — wniosek ZAM do ZUS")
     elif is_contract:
         certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek.", "Wymagane do ZUS")
     elif is_zus:
@@ -412,7 +412,7 @@ def checklist_context(scenario: Dict[str, Any]) -> Dict[str, Any]:
         "single_rate": single_rate,
         "due": due,
         "steps": [
-            ("Wniosek ZAM", "Zasiłek macierzyński, rodzicielski lub ojcowski.", "Gotowy do wypełnienia"),
+            ("Wniosek ZAM", "Zasiłek macierzyński. Przy działalności, zleceniu i po ustaniu zatrudnienia urlop rodzicielski składa się na ZUR, a ojcowski na ZAO." if (is_jdg or is_contract) else "Zasiłek macierzyński.", "Gotowy do wypełnienia"),
             certificate,
             ("Wniosek o urlop do pracodawcy", "Oddzielny od wniosku o wypłatę zasiłku.", "Wymaga podpisu"),
             ("Odpis aktu urodzenia", "ZUS może pozyskać dane elektronicznie z rejestru.", "Do potwierdzenia"),
@@ -430,17 +430,17 @@ def _checklist_from_plan(scenario: Dict[str, Any], overlay: Dict[str, Any]) -> D
     is_zus = bool(overlay["payer_is_zus"]) if overlay.get("payer_is_zus") is not None else bool((scenario.get("benefit_payer") or {}).get("is_zus"))
     benefit = str(overlay.get("benefit_type") or "porod")
     if employment == "jdg":
-        certificate = ("Zaświadczenie Z-3", "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b został zniesiony 24.10.2026 r.", "Nie dotyczy — wniosek ZAM do ZUS")
-        route_note = "Wniosek ZAM składasz bezpośrednio do ZUS, bez Z-3."
+        certificate = ("Zaświadczenie Z-3", "Przy działalności składasz ZAM bezpośrednio do ZUS. Zaświadczenie Z-3 nie jest wymagane. Formularz Z-3b zniesiono 24.10.2026 r. (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", "Nie dotyczy — wniosek ZAM do ZUS")
+        route_note = "Wniosek ZAM składasz bezpośrednio do ZUS, bez Z-3. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
     elif employment == "ustanie":
-        certificate = ("Dokument potwierdzający ustanie zatrudnienia", "Do wniosku ZAM dołączasz dokument potwierdzający ustanie zatrudnienia.", "Wymagane do ZUS")
-        route_note = "Wypłata przez ZUS po ustaniu zatrudnienia."
+        certificate = ("Dokument potwierdzający ustanie zatrudnienia", "Do wniosku ZAM dołączasz dokument potwierdzający ustanie zatrudnienia. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", "Wymagane do ZUS")
+        route_note = "Wypłata przez ZUS po ustaniu zatrudnienia. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
     elif employment == "zlecenie" and any("Z-3a" in item for item in forms):
-        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek.", "Wymagane do ZUS")
-        route_note = "ZUS wypłaci zasiłek po otrzymaniu Z-3a od zleceniodawcy."
+        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca przekazuje do ZUS formularz Z-3a z podstawą składek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", "Wymagane do ZUS")
+        route_note = "ZUS wypłaci zasiłek po otrzymaniu Z-3a od zleceniodawcy. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
     elif employment == "zlecenie":
-        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek.", "Nie dotyczy — wypłaca zleceniodawca")
-        route_note = "Zasiłek wypłaca zleceniodawca. Z-3a nie jest wymagane."
+        certificate = ("Zaświadczenie płatnika Z-3a", "Zleceniodawca zgłasza powyżej 20 ubezpieczonych i sam wypłaca zasiłek. Zasiłek macierzyński: ZAM. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO.", "Nie dotyczy — wypłaca zleceniodawca")
+        route_note = "Zasiłek wypłaca zleceniodawca. Z-3a nie jest wymagane. Urlop rodzicielski: ZUR. Urlop ojcowski: ZAO."
     elif any(item == "Z-3" or item.startswith("Z-3") and "Z-3a" not in item for item in forms):
         certificate = ("Zaświadczenie płatnika Z-3", "Pracodawca przekazuje do ZUS zaświadczenie Z-3.", "Wymagane do ZUS")
         route_note = "ZUS wypłaca zasiłek po zaświadczeniu Z-3."
@@ -475,7 +475,7 @@ def _checklist_from_plan(scenario: Dict[str, Any], overlay: Dict[str, Any]) -> D
         "due": due,
         "deadline": deadline,
         "steps": [
-            ("Wniosek ZAM", "Zasiłek macierzyński, rodzicielski lub ojcowski.", "Gotowy do wypełnienia"),
+            ("Wniosek ZAM", "Zasiłek macierzyński. Przy działalności, zleceniu i po ustaniu zatrudnienia urlop rodzicielski składa się na ZUR, a ojcowski na ZAO." if employment in ("jdg", "zlecenie", "ustanie") else "Zasiłek macierzyński.", "Gotowy do wypełnienia"),
             certificate,
             leave_step,
             event_step,
@@ -517,7 +517,7 @@ def render_checklist_pdf(scenario: Dict[str, Any], overlay: Optional[Dict[str, A
     ))
     story.append(Spacer(1, 8))
     story.append(Paragraph(
-        "Od 24.10.2026 r. formularze ZUR, ZAO oraz Z-3b nie są już używane. Wniosek składasz na zunifikowanym formularzu ZAM.",
+        "Od 24.10.2026 r. zniesiono wyłącznie formularz Z-3b (rozporządzenie MRPiPS z 27.09.2026 r., Dz.U. poz. 1316). Zasiłek macierzyński składa się na ZAM. Przy działalności, umowie zlecenia i po ustaniu zatrudnienia zasiłek za okres urlopu rodzicielskiego składa się na ZUR, a za okres urlopu ojcowskiego na ZAO.",
         styles["small"],
     ))
     story.append(Spacer(1, 8))

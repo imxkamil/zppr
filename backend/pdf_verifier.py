@@ -1,7 +1,8 @@
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from datetime import date
+from typing import Any, Dict, List, Optional
 
 import fitz  # PyMuPDF
 
@@ -284,7 +285,7 @@ def _empty_extraction() -> Dict[str, Any]:
     }
 
 
-def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str, Any]:
+def _offline_result(filename: str, page_count: int, full_text: str, source: str = "pymupdf") -> Dict[str, Any]:
     if not full_text.strip():
         extracted = _empty_extraction()
         extracted["insurance_period"] = "Brak warstwy tekstowej"
@@ -293,12 +294,14 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
             "pages": page_count,
             "confidence": 0,
             "text_layer": False,
-            "error": "Brak warstwy tekstowej. To wygląda na skan. Bez GEMINI_API_KEY aplikacja nie wykonuje OCR i nie podstawia danych.",
+            "error": "Brak warstwy tekstowej. PyMuPDF i lokalny OCR nie odczytały znaków. Kwota i data nie zostały podstawione.",
+            "base_salary_gross": None,
+            "monthly_gross_label": "—",
             "extracted": extracted,
             "completeness": {
                 "ok": False,
                 "title": "Brak warstwy tekstowej",
-                "detail": "Nie da się odczytać pól z obrazu stron. Wgraj PDF z tekstem albo ustaw GEMINI_API_KEY, żeby model mógł zrobić OCR.",
+                "detail": "Nie da się odczytać pól ze skanu. Podstawa i data zostają puste.",
             },
             "decision": {
                 "approved": False,
@@ -370,7 +373,11 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
         completeness_detail = "Zostawiono puste te wartości, których nie ma przy etykietach wniosku. Nie użyto kwoty ani daty przykładowej."
     else:
         completeness_title = "Odczyt deterministyczny"
-        completeness_detail = f"PyMuPDF przekazał {page_count} str. tekstu. Pola pochodzą z etykiet w pliku, bez modelu."
+        completeness_detail = (
+            f"Lokalny OCR odczytał tekst z {min(page_count, 2)} str. Pola pochodzą z etykiet, bez uzupełniania braków."
+            if source == "rapidocr"
+            else f"PyMuPDF przekazał {page_count} str. tekstu. Pola pochodzą z etykiet w pliku, bez modelu."
+        )
 
     return {
         "filename": filename,
@@ -408,55 +415,192 @@ def _offline_result(filename: str, page_count: int, full_text: str) -> Dict[str,
     }
 
 
-def _merge_gemini(base: Dict[str, Any], parsed: Dict[str, Any]) -> Dict[str, Any]:
+_OCR = None
+_TITLES = {
+    "uop": "Umowa o pracę",
+    "jdg": "Pozarolnicza działalność gospodarcza",
+    "zlecenie": "Umowa zlecenie",
+    "ustanie": "Umowa o pracę (ustanie zatrudnienia)",
+}
+
+
+def _blank(value: Any) -> bool:
+    return value in (None, "", "Nie odczytano")
+
+
+def _ocr_pages(doc: fitz.Document) -> str:
+    global _OCR
+    try:
+        if _OCR is None:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR = RapidOCR()
+    except Exception:
+        return ""
+    chunks: List[str] = []
+    for index, page in enumerate(doc):
+        if index >= 2:
+            break
+        try:
+            image = page.get_pixmap(dpi=200, alpha=False).tobytes("png")
+            result, _elapsed = _OCR(image)
+        except Exception:
+            continue
+        if not result:
+            continue
+        for row in result:
+            if isinstance(row, (list, tuple)) and len(row) >= 2 and isinstance(row[1], str):
+                text = row[1].strip()
+                if text:
+                    chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def _json_object(raw: str) -> Optional[Dict[str, Any]]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    if isinstance(data, dict) and isinstance(data.get("extracted"), dict):
+        return data["extracted"]
+    return data if isinstance(data, dict) else None
+
+
+def _nvidia_fields(full_text: str) -> Optional[Dict[str, Any]]:
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key or not full_text.strip():
+        return None
+    try:
+        import httpx
+        response = httpx.post(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "nvidia/nemotron-3.5-bolt-e4b",
+                "temperature": 0.0,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Zwróć wyłącznie czysty JSON. Nie zgaduj wartości, których nie ma w tekście. Dla braku wstaw null.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Uzupełnij tylko brakujące pola wniosku ZUS. "
+                            "Klucze: applicant_name (imię i nazwisko albo null), "
+                            "due_date (YYYY-MM-DD albo null), "
+                            "base_salary_gross (liczba albo null), "
+                            "employment_type (uop, jdg, zlecenie, ustanie albo null).\n"
+                            f"Tekst:\n{full_text[:6000]}"
+                        ),
+                    },
+                ],
+            },
+            timeout=12.0,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    except Exception:
+        return None
+    return _json_object(str(content or ""))
+
+
+def _merge_nvidia(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     extracted = dict(base.get("extracted") or {})
-    incoming = parsed.get("extracted") or {}
-    for key, value in incoming.items():
-        current = extracted.get(key)
-        if current in (None, "", "Nie odczytano") and value not in (None, "", "Nie odczytano"):
-            extracted[key] = value
+    filled = False
+
+    name = incoming.get("applicant_name")
+    if _blank(extracted.get("applicant_name")) and isinstance(name, str):
+        name = " ".join(name.split())
+        if name and len(name) <= 80 and not re.search(r"\d", name):
+            extracted["applicant_name"] = name
+            filled = True
+
+    due = incoming.get("due_date", incoming.get("due_or_birth_date"))
+    if _blank(extracted.get("due_or_birth_date")) and isinstance(due, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+        try:
+            date.fromisoformat(due)
+        except ValueError:
+            due = ""
+        if due:
+            extracted["due_or_birth_date"] = due
+            filled = True
+
+    salary = incoming.get("base_salary_gross", incoming.get("base_amount_value"))
+    if extracted.get("base_amount_value") is None and salary not in (None, ""):
+        try:
+            amount = float(salary)
+        except (TypeError, ValueError):
+            amount = 0
+        if 0 < amount <= 1_000_000:
+            extracted["base_amount_value"] = amount
+            if _blank(extracted.get("base_amount")):
+                extracted["base_amount"] = _pln(amount)
+            filled = True
+
+    employment = incoming.get("employment_type")
+    if _blank(extracted.get("employment_type")) and employment in _TITLES:
+        extracted["employment_type"] = employment
+        if _blank(extracted.get("insurance_title")):
+            extracted["insurance_title"] = _TITLES[employment]
+        filled = True
+
     base["extracted"] = extracted
-    if parsed.get("completeness") and base["confidence"] < 70:
-        base["completeness"] = parsed["completeness"]
-    if extracted.get("base_amount_value") or extracted.get("due_or_birth_date") or extracted.get("applicant_name"):
-        base["error"] = None
-        base["text_layer"] = True
-    base["confidence"] = max(int(base.get("confidence") or 0), 70)
-    base["model"] = "gemini-2.5-flash"
+    if filled:
+        base["model"] = "nvidia/nemotron-3.5-bolt-e4b"
     return base
 
 
-def _gemini_from_text(filename: str, page_count: int, full_text: str, api_key: str) -> Optional[Dict[str, Any]]:
-    from google import genai
-    client = genai.Client(api_key=api_key)
-    prompt = f"""
-    Zwróć wyłącznie JSON z polami extracted: applicant_name, role (matka/ojciec/opiekun),
-    insurance_title, employment_type (uop/jdg/zlecenie/ustanie), insured_count, base_amount_value (liczba albo null),
-    due_or_birth_date (YYYY-MM-DD albo null), requested_variant.
-    Nie zgaduj kwot ani dat, których nie ma w tekście. Wstaw null.
-    Plik: {filename}, strony: {page_count}.
-    Tekst:
-    {full_text[:8000]}
-    """
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    raw = (response.text or "").strip().removeprefix("```json").removesuffix("```").strip()
-    return json.loads(raw)
-
-
-def _gemini_from_scan(doc: fitz.Document, filename: str, api_key: str) -> Optional[Dict[str, Any]]:
-    from google.genai import types
-    from google import genai
-    client = genai.Client(api_key=api_key)
-    parts = []
-    for index, page in enumerate(doc):
-        if index > 1:
-            break
-        image = page.get_pixmap(dpi=180).tobytes("png")
-        parts.append(types.Part.from_bytes(data=image, mime_type="image/png"))
-    parts.append("Odczytaj z obrazu wniosku ZUS tylko pola, które widać. Zwróć JSON extracted jak przy tekście. Nie wymyślaj kwot. Plik: " + filename)
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=parts)
-    raw = (response.text or "").strip().removeprefix("```json").removesuffix("```").strip()
-    return json.loads(raw)
+def _apply_plan(result: Dict[str, Any], full_text: str) -> Dict[str, Any]:
+    extracted = result.get("extracted") or {}
+    base = extracted.get("base_amount_value")
+    event_date = extracted.get("due_or_birth_date")
+    employment = extracted.get("employment_type")
+    label = str(extracted.get("requested_variant") or "")
+    if re.search(r"81[,.]5", label):
+        variant = "81.5"
+    elif "100" in label and "70" in label:
+        variant = "100_70"
+    else:
+        return result
+    if base is None or not event_date or not employment:
+        return result
+    insured = extracted.get("insured_count")
+    benefit_type = extracted.get("benefit_type") or "porod"
+    lowered = full_text.lower()
+    has_z3a = "z-3a" in lowered or "z3a" in lowered
+    payer_is_zus = employment in ("jdg", "ustanie") or insured is None or (isinstance(insured, int) and insured <= 20)
+    missing_z3a = employment == "zlecenie" and not has_z3a and payer_is_zus
+    plan = calculate_benefit_plan({
+        "benefit_type": benefit_type,
+        "employment_type": employment,
+        "children_count": 1,
+        "due_date": event_date,
+        "variant": variant,
+        "base_salary_gross": base,
+        "parent_name": extracted.get("applicant_name") or "",
+        "parent_role": extracted.get("role") or "matka",
+        "liczba_ubezpieczonych": insured if isinstance(insured, int) else (1 if employment == "jdg" else 21),
+        "include_paternity": benefit_type not in ("piecza", "ciaza_l4"),
+    })
+    approved = bool(plan["entitled"]) and not missing_z3a
+    decision = dict(result.get("decision") or {})
+    decision["approved"] = approved
+    decision["status_title"] = "PRAWO DO WYLICZENIA" if approved else "POSTĘPOWANIE DO UZUPEŁNIENIA"
+    decision["subtitle"] = "W tekście jest umowa zlecenia, a nie ma zaświadczenia Z-3a." if missing_z3a else (plan["denial_reason"] or plan["payer"]["note"])
+    decision["monthly_gross"] = _pln(plan["monthly_gross"]) if plan["entitled"] else "0,00 zł"
+    decision["rate_note"] = f"{label}. Podstawa zasiłku po 13,71%: {_pln(plan['benefit_base'])}."
+    result["decision"] = decision
+    return result
 
 
 def analyze_uploaded_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
@@ -468,27 +612,22 @@ def analyze_uploaded_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     try:
         page_count = len(doc)
         full_text = "\n".join(page.get_text("text") for page in doc).strip()
-        api_key = os.getenv("GEMINI_API_KEY")
+        source = "pymupdf"
         if not full_text:
-            if not api_key:
-                return _offline_result(filename, page_count, "")
-            try:
-                parsed = _gemini_from_scan(doc, filename, api_key)
-            except Exception:
-                parsed = None
-            result = _offline_result(filename, page_count, "")
-            if not parsed:
-                result["error"] = "Brak warstwy tekstowej, a OCR Gemini nie zwrócił pól. Dane nie zostały uzupełnione stałymi."
-                return result
-            return _merge_gemini(result, parsed)
-        result = _offline_result(filename, page_count, full_text)
-        if api_key:
-            try:
-                parsed = _gemini_from_text(filename, page_count, full_text, api_key)
-            except Exception:
-                parsed = None
+            full_text = _ocr_pages(doc)
+            source = "rapidocr"
+        if not full_text.strip():
+            return _offline_result(filename, page_count, "")
+        result = _offline_result(filename, page_count, full_text, source)
+        extracted = result.get("extracted") or {}
+        missing = any(_blank(extracted.get(key)) if key != "base_amount_value" else extracted.get(key) is None for key in ("applicant_name", "due_or_birth_date", "base_amount_value", "employment_type"))
+        if os.getenv("NVIDIA_API_KEY") and missing:
+            parsed = _nvidia_fields(full_text)
             if parsed:
-                result = _merge_gemini(result, parsed)
+                before = dict(extracted)
+                result = _merge_nvidia(result, parsed)
+                if result.get("extracted") != before:
+                    result = _apply_plan(result, full_text)
         return result
     finally:
         doc.close()

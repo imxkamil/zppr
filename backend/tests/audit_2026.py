@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.pop("GEMINI_API_KEY", None)
+os.environ.pop("NVIDIA_API_KEY", None)
 
 import fitz
 

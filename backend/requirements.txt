@@ -8,3 +8,5 @@ pymupdf==1.26.7
 # 0.3.0 nie jest już publikowane; 1.21.1 ma client.models.generate_content używane w pdf_verifier.py.
 google-genai==1.21.1
 reportlab==4.2.2
+rapidocr-onnxruntime==1.4.4
+httpx==0.28.1
